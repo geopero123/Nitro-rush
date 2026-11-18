@@ -67,6 +67,8 @@ const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.85, 0.55, 0.82);
 composer.addPass(bloom);
+// Radial speed blur: 6 taps + one extra pair of reads for chromatic aberration (was 24 reads).
+// Disabled entirely when idle and on LOW quality; the vignette lives in CSS (#vignette) so toggling is seamless.
 const speedPass = new ShaderPass({
   uniforms: { tDiffuse: { value: null }, strength: { value: 0 }, ca: { value: 0 }, center: { value: new THREE.Vector2(0.5, 0.42) } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
@@ -75,19 +77,17 @@ const speedPass = new ShaderPass({
     void main(){
       vec2 d = vUv - center; float l = length(d);
       float s = strength * smoothstep(0.12, 0.75, l);
-      vec3 c = vec3(0.0);
-      for (int i = 0; i < 8; i++) {
-        float t = float(i) / 7.0;
-        vec2 uv = vUv - d * s * t;
-        c.r += texture2D(tDiffuse, uv - d * ca).r;
-        c.g += texture2D(tDiffuse, uv).g;
-        c.b += texture2D(tDiffuse, uv + d * ca).b;
-      }
-      c /= 8.0;
-      c *= 1.0 - smoothstep(0.45, 0.95, l) * 0.55;
+      vec3 c0 = texture2D(tDiffuse, vUv).rgb;
+      vec3 c = c0;
+      for (int i = 1; i < 6; i++) c += texture2D(tDiffuse, vUv - d * s * (float(i) / 5.0)).rgb;
+      c /= 6.0;
+      float k = smoothstep(0.2, 0.8, l);
+      c.r += (texture2D(tDiffuse, vUv - d * ca).r - c0.r) * k;
+      c.b += (texture2D(tDiffuse, vUv + d * ca).b - c0.b) * k;
       gl_FragColor = vec4(c, 1.0);
     }`,
 });
+speedPass.enabled = false;
 composer.addPass(speedPass);
 composer.addPass(new OutputPass());
 
@@ -1139,6 +1139,7 @@ function step(realDt) {
   const blurT = playing ? clamp((P.speed - 60) / 50, 0, 1) * 0.04 + (P.boosting ? 0.07 : 0) : G.state === 'crashing' ? 0.04 : 0;
   speedPass.uniforms.strength.value = damp(speedPass.uniforms.strength.value, blurT, 5, fxDt);
   speedPass.uniforms.ca.value = speedPass.uniforms.strength.value * 0.06;
+  speedPass.enabled = save.quality === 'high' && speedPass.uniforms.strength.value > 0.003;
   if (G.flash > 0) { G.flash = Math.max(0, G.flash - realDt * 1.5); }
   const fo = (G.flash * 0.35).toFixed(3);
   if (fo !== flashEl._o) flashEl.style.opacity = flashEl._o = fo; // avoid per-frame style writes
