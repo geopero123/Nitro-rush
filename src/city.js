@@ -2,6 +2,7 @@
 // storefront ground floors, setbacks, rooftop clutter, billboards, neon, blade signs, background towers,
 // sign gantries, overpasses and street palms. Everything recycles by absolute distance D (mesh z = -(D - distance)).
 import * as THREE from 'three';
+import { markReflective } from './fx.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const irand = (a, b) => Math.floor(rand(a, b + 1));
@@ -154,7 +155,7 @@ function buildAtlas() {
 
 function makeFacadeMaterial(atlas) {
   const m = new THREE.MeshStandardMaterial({
-    map: atlas.at, emissiveMap: atlas.et, roughnessMap: atlas.mt, emissive: 0xffffff, emissiveIntensity: 1.35,
+    map: atlas.at, emissiveMap: atlas.et, roughnessMap: atlas.mt, emissive: 0xffffff, emissiveIntensity: 0.8,
     roughness: 1, metalness: 0, envMapIntensity: 0.6,
   });
   m.onBeforeCompile = (sh) => {
@@ -177,7 +178,7 @@ float roughnessFactor = mix(0.07, 0.92, mk);`)
       .replace('#include <emissivemap_fragment>', `
 vec3 em = textureGrad(emissiveMap, auv, gdx, gdy).rgb;
 float h = cityHash(floor(vTile * 4.0) + vCell.xy * 37.0);
-float lit = vCell.z > 0.5 ? mix(0.6, 1.1, h) : step(0.55, h) * mix(0.25, 1.15, fract(h * 7.13));
+float lit = vCell.z > 0.5 ? mix(0.75, 1.25, h) : step(0.55, h) * mix(0.25, 1.0, fract(h * 7.13));
 vec3 tint = vCell.z > 0.5 ? vec3(1.0) : mix(vec3(1.0, 0.8, 0.55), vec3(0.72, 0.86, 1.0), step(0.55, fract(h * 3.7)));
 totalEmissiveRadiance *= em * lit * tint;`);
   };
@@ -413,7 +414,7 @@ export function createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso = 4 }) {
     const beacon = new THREE.Mesh(beaconGeo, beaconMat);
     const ad = new THREE.Mesh(AD_GEOS.wall[0], adMat);
     mesh.add(neon, sign, beacon, ad);
-    scene.add(mesh);
+    scene.add(mesh); markReflective(mesh);
     const b = { mesh, neon, sign, beacon, ad, side, D: 0, len: 10 };
     placeBuilding(b);
     buildings.push(b);
@@ -480,8 +481,8 @@ export function createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso = 4 }) {
     return g;
   }
   const structures = [];
-  for (let i = 0; i < 3; i++) { const m = makeGantry(); m.visible = false; scene.add(m); structures.push({ g: m, type: 'gantry', active: false, D: 0 }); }
-  for (let i = 0; i < 2; i++) { const m = makeOverpass(); m.visible = false; scene.add(m); structures.push({ g: m, type: 'overpass', active: false, D: 0 }); }
+  for (let i = 0; i < 3; i++) { const m = makeGantry(); m.visible = false; scene.add(m); markReflective(m); structures.push({ g: m, type: 'gantry', active: false, D: 0 }); }
+  for (let i = 0; i < 2; i++) { const m = makeOverpass(); m.visible = false; scene.add(m); markReflective(m); structures.push({ g: m, type: 'overpass', active: false, D: 0 }); }
   let nextStructD = 260, lastDist = 0;
 
   // ------------------------------------------------ palms along the sidewalks (scrolling, period 36m like the lamps)

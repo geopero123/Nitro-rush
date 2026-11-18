@@ -113,6 +113,7 @@ export function buildCar(model) {
   const lights = new THREE.Group();
   for (const s of ['tail', 'head']) if (model.geos[s]) lights.add(new THREE.Mesh(model.geos[s], MATS[s]));
   if (model.glow) { const gm = new THREE.Mesh(model.glow, glowMat); gm.renderOrder = 3; lights.add(gm); }
+  lights.traverse((o) => o.layers.enable(1)); // REFLECT layer: tail lights glint on the wet road
   g.add(body, rest, lights);
   return { g, body };
 }

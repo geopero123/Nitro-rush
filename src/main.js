@@ -10,6 +10,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Sound } from './audio.js';
 import { loadTraffic, poolModels, buildCar, repaint } from './cars.js';
 import { createCity } from './city.js';
+import { createRoadReflection, markReflective, createSmoke, createDebris, createFlameMaterial } from './fx.js';
 import { haptic, initNative, exitApp, isNative } from './native.js';
 
 // ---------------------------------------------------------------- helpers
@@ -91,6 +92,9 @@ const speedPass = new ShaderPass({
 speedPass.enabled = false;
 composer.addPass(speedPass);
 composer.addPass(new OutputPass());
+const refl = createRoadReflection(renderer, scene, camera);
+const smoke = createSmoke(scene), debris = createDebris(scene);
+const flameShader = createFlameMaterial();
 
 function applyQuality() {
   const hi = save.quality === 'high';
@@ -99,6 +103,7 @@ function applyQuality() {
   composer.setPixelRatio(pr);
   bloom.enabled = hi;
   city.setQuality(hi);
+  refl.setEnabled(hi);
   resize();
 }
 function resize() {
@@ -106,6 +111,7 @@ function resize() {
   renderer.setSize(w, h, false);
   composer.setSize(w, h);
   bloom.resolution.set(w / 2, h / 2);
+  refl.setSize(w, h);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
@@ -262,7 +268,7 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(1000, 32, 16), new THREE.Sha
     }`,
 }));
 sky.renderOrder = -10;
-scene.add(sky);
+scene.add(sky); markReflective(sky);
 
 const skyline = new THREE.Mesh(new THREE.PlaneGeometry(2200, 260), new THREE.MeshBasicMaterial({ map: skylineTex, transparent: true, fog: false, depthWrite: false }));
 skyline.position.set(0, 110, -640); skyline.renderOrder = -5;
@@ -281,6 +287,7 @@ const TRACK_LEN = VIEW_AHEAD + BEHIND + PERIOD * 2; // multiple of 12
   const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, TRACK_LEN), new THREE.MeshStandardMaterial({ map: roadTex, roughnessMap: roadRough, roughness: 1, metalness: 0.05, envMapIntensity: 1.3 }));
   road.rotation.x = -Math.PI / 2; road.position.z = BEHIND + PERIOD - TRACK_LEN / 2;
   scroller.add(road);
+  refl.patchRoad(road.material);
 
   walkTex.repeat.set(1, TRACK_LEN / PERIOD);
   const walkMat = new THREE.MeshStandardMaterial({ map: walkTex, roughness: 0.8 });
@@ -292,7 +299,7 @@ const TRACK_LEN = VIEW_AHEAD + BEHIND + PERIOD * 2; // multiple of 12
     const rail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.35, TRACK_LEN), new THREE.MeshStandardMaterial({ color: 0x8890a0, metalness: 0.9, roughness: 0.3 }));
     rail.position.set(side * 8.75, 0.75, road.position.z); scroller.add(rail);
     const neon = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, TRACK_LEN), new THREE.MeshBasicMaterial({ color: side < 0 ? hdr(0xff2e88, 3.5) : hdr(0x22e6ff, 3.5) }));
-    neon.position.set(side * 8.68, 0.95, road.position.z); scroller.add(neon);
+    neon.position.set(side * 8.68, 0.95, road.position.z); scroller.add(neon); markReflective(neon);
   }
   const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.14, 0.9, 0.14), new THREE.MeshStandardMaterial({ color: 0x555a66, metalness: 0.8, roughness: 0.4 }), 2 * Math.ceil(TRACK_LEN / 3));
   const m4 = new THREE.Matrix4(); let k = 0;
@@ -324,6 +331,7 @@ scene.add(lamps);
     k++;
   }
   lamps.add(poles, heads, pools);
+  markReflective(heads);
 }
 
 // ---------------------------------------------------------------- city (buildings, billboards, gantries, overpasses, palms)
@@ -424,8 +432,8 @@ player.group.add(headlight, headlight.target);
   const tm = new THREE.MeshBasicMaterial({ map: streakTex, color: new THREE.Color(0.9, 0.05, 0.05), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
   for (const x of [-0.62, 0.62]) { const m = new THREE.Mesh(streakGeo, tm); m.scale.set(0.45, 1, 3.2); m.position.x = x; tail.add(m); }
   tail.position.z = 2.2; player.group.add(tail); player.tail = tail;
-  const flameMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.35, 0.7, 2.2), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
-  const coreMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 1.4, 0.6), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
+  const flameMat = flameShader;
+  const coreMat = flameShader;
   const fg = new THREE.ConeGeometry(0.11, 1.0, 10, 1, true).rotateX(-Math.PI / 2).translate(0, 0, 0.7);
   for (const x of [-0.22, 0.22]) {
     const f = new THREE.Mesh(fg, flameMat), c = new THREE.Mesh(fg, coreMat); c.scale.set(0.5, 0.5, 0.55);
@@ -504,6 +512,7 @@ function resetWorld() {
   for (const c of coins) { c.active = false; c.m.visible = false; }
   for (const r of ramps) { r.active = false; r.g.visible = false; }
   for (const s of sparks) s.life = 0;
+  smoke.clear(); debris.clear();
 }
 
 // ---------------------------------------------------------------- spawning
@@ -572,6 +581,7 @@ function takedown(t, dx) {
   t.speed = player.speed * 0.95;
   t.g.children[3].visible = false;
   emitSparks(t.x, 0.6, 0, 45, 1.5, 4);
+  debris.burst(t.x, 0.7, -(t.D - G.distance), 26, t.body.material && t.body.material.color ? t.body.material.color : new THREE.Color(0.8, 0.8, 0.8), 4); smoke.emit(t.x, 0.5, -(t.D - G.distance), 8, 3);
   popup('TAKEDOWN!', 'take', `+${pts}`);
   slowmo(0.35, 0.5); G.shake = 0.9; G.flash = 0.35;
   sound.takedown(); haptic('heavy');
@@ -673,6 +683,7 @@ function updatePlaying(dt) {
     if (P.y <= 0) {
       P.y = 0; P.air = false; sound.land(); haptic('medium'); G.shake = Math.max(G.shake, 0.5);
       emitSparks(P.x, 0.1, 1.5, 18, 1, 6);
+      smoke.emit(P.x, 0.25, 1.6, 12, 5);
       if (P.rolling) {
         addCombo(); const pts = Math.round(800 * mult()); G.score += pts; P.nitro = 1;
         popup('BARREL ROLL!', 'roll', `+${pts}`);
@@ -1015,6 +1026,7 @@ const SIM = Number(new URLSearchParams(location.search).get('sim') || 1);
 function frame() {
   const d0 = Math.min(clock.getDelta(), 0.05);
   for (let i = 0; i < SIM; i++) step(SIM > 1 ? 1 / 30 : d0);
+  refl.render();
   composer.render();
   requestAnimationFrame(frame);
 }
@@ -1046,6 +1058,8 @@ function step(realDt) {
     if (G.state !== 'playing' && G.state !== 'crashing') for (const t of traffic) if (t.active) updateTrafficCar(t, dt);
     updatePlayerVisual(dt);
     updateSparks(dt);
+    smoke.update(dt, camera); debris.update(dt);
+    flameShader.uniforms.time.value = G.t;
   }
   updateCamera(dt, realDt);
 
