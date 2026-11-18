@@ -122,3 +122,8 @@ export function repaint(t) {
   const M = t.model; if (!M || M.fixedPaint) return;
   t.body.material = M.kind === 'truck' ? pick(TRUCK_PAINTS) : M.sports ? pick(SPORT_PAINTS) : pick(CIVIL_PAINTS);
 }
+
+/** three.js ignores envMapIntensity for scene.environment unless material.envMap is set: assign it explicitly. */
+export function setCarEnvironment(env) {
+  for (const m of [...CIVIL_PAINTS, ...SPORT_PAINTS, ...TRUCK_PAINTS, glassMat, miscMat]) { m.envMap = env; m.needsUpdate = true; }
+}

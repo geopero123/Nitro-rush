@@ -7,7 +7,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Sound } from './audio.js';
-import { loadTraffic, poolModels, buildCar, repaint } from './cars.js';
+import { loadTraffic, poolModels, buildCar, repaint, setCarEnvironment } from './cars.js';
 import { createCity, makeRoadMaterial, makeSidewalkMaterial, makeStreetlightParts } from './city.js';
 import { createRoadReflection, markReflective, createSmoke, createDebris, createFlameMaterial } from './fx.js';
 import { haptic, initNative, exitApp, isNative } from './native.js';
@@ -394,6 +394,7 @@ async function loadCar(onProgress) {
   const glassMat = new THREE.MeshPhysicalMaterial({ color: 0x080810, metalness: 0.3, roughness: 0.02, transparent: true, opacity: 0.7, envMapIntensity: 2 });
   const get = (n) => model.getObjectByName(n);
   get('body').material = player.bodyMat;
+  for (const m of [player.bodyMat, detailsMat, glassMat]) m.envMap = scene.environment; // so envMapIntensity applies
   ['rim_fl', 'rim_fr', 'rim_rr', 'rim_rl', 'trim'].forEach((n) => { const o = get(n); if (o) o.material = detailsMat; });
   get('glass').material = glassMat;
   const tl = get('lights_red'); if (tl) tl.traverse((o) => { if (o.isMesh) o.material = new THREE.MeshBasicMaterial({ color: hdr(0xff1010, 6) }); });
@@ -1032,7 +1033,7 @@ function step(realDt) {
   applyQuality();
   try {
     await loadCar((p) => { $('loadbar').style.width = (p * 80).toFixed(0) + '%'; });
-    await loadTraffic();
+    await loadTraffic(); setCarEnvironment(scene.environment);
     addTraffic('sedan', 18); addTraffic('suv', 10); addTraffic('truck', 6);
   } catch (e) {
     console.error(e); $('loadtext').textContent = 'Failed to load car: ' + e.message; return;

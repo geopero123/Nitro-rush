@@ -1,4 +1,8 @@
-// Build public/models/traffic.glb: Kenney Car Kit (CC0) + simplified Ferrari 458 (CC BY 4.0)
+// Build public/models/traffic.glb: Kenney Car Kit (CC0) + simplified Ferrari 458 (CC BY 4.0) + Khronos CarConcept (CC BY 4.0)
+// Usage (outside the repo): npm i @gltf-transform/core @gltf-transform/extensions @gltf-transform/functions meshoptimizer draco3dgltf sharp three
+//   copy the Kenney lowpoly GLBs (sedan, sedan_sports, suv, suv_luxury, taxi, van, police_car, delivery_van, truck, truck_flat,
+//   garbage_truck) from @netforge/asset-library-files/library/lowpoly plus its colormap texture (colormap.png) into KDIR,
+//   download CarConcept.glb (glTF-Sample-Assets Models/CarConcept/GLB) and adjust the paths below, then: node build-traffic.mjs out.glb
 // Each car -> one node with up to 5 child meshes named by slot: paint, glass, misc (vertex colours), tail, head.
 // All cars face -Z, sit on y=0, centred on x/z, real-world metres.
 import { NodeIO, Document } from '@gltf-transform/core';
