@@ -24,6 +24,8 @@ const hdr = (hex, k) => new THREE.Color(hex).multiplyScalar(k);
 const SAVE_KEY = 'nitroRush.v1';
 const save = { best: 0, coins: 0, owned: ['rosso', 'nero'], paint: 'rosso', controls: 'touch', sound: true, music: true, quality: 'high', played: 0 };
 try { Object.assign(save, JSON.parse(localStorage.getItem(SAVE_KEY) || '{}')); } catch (e) { /* ignore */ }
+if (!Array.isArray(save.owned)) save.owned = ['rosso', 'nero'];
+for (const k of ['best', 'coins', 'played']) if (!Number.isFinite(save[k])) save[k] = 0;
 const persist = () => { try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { /* ignore */ } };
 
 const PAINTS = [
@@ -406,7 +408,7 @@ function addTraffic(kind, n) {
     const { g, body } = buildCar(M);
     const st = new THREE.Group(); for (const sx of [-1, 1]) { const m = new THREE.Mesh(streakGeo, streakMat); m.scale.set(0.5, 1, kind === 'truck' ? 4.5 : 3.5); m.position.x = sx * T.halfW * 0.65; st.add(m); } st.position.z = T.halfL; g.add(st);
     g.visible = false; scene.add(g);
-    traffic.push({ g, body, T, model: M, active: false, D: 0, x: 0, speed: 0, dead: false, passed: false, scraped: false, vy: 0, vx: 0, y: 0, av: new THREE.Vector3(), sway: Math.random() * 10 });
+    traffic.push({ g, body, T, model: M, lane: 0, baseSpeed: 0, active: false, D: 0, x: 0, speed: 0, dead: false, passed: false, scraped: false, vy: 0, vx: 0, y: 0, av: new THREE.Vector3(), sway: Math.random() * 10 });
   }
 }
 
@@ -448,7 +450,11 @@ function emitSparks(x, y, z, n, spread = 1, vz = 0) {
     s.p.set(x, y, z); s.v.set(rand(-6, 6) * spread, rand(1, 7), rand(-4, 8) + vz); s.life = rand(0.3, 0.8);
   }
 }
+let sparksIdle = false;
 function updateSparks(dt) {
+  // skip the 260 lookAt/updateMatrix calls when no spark is alive (instances already zero-scaled)
+  if (sparksIdle && !sparks.some((s) => s.life > 0)) return;
+  sparksIdle = !sparks.some((s) => s.life > 0);
   for (let i = 0; i < SPARKS; i++) {
     const s = sparks[i];
     if (s.life > 0) {
@@ -541,15 +547,25 @@ const G = {
   countdown: 0, crashT: 0, camAngle: 0, menuSpeed: 26,
 };
 const input = { left: 0, right: 0, steer: 0, tilt: 0, keys: new Set() };
+let cdTimer = 0, hintTimer = 0;
 
 function difficulty() { return clamp(G.distance / 9000, 0, 1); }
 function cruiseSpeed() { return 60 + Math.min(24, G.distance / 350); }
 
 function resetWorld() {
+  // Buildings store absolute D; shift them (and the recycle cursor) with the distance reset,
+  // otherwise after a run / menu idle the whole city sits far ahead and the road is empty.
+  const off = G.distance;
+  for (const b of buildings) b.D -= off;
+  cursor['-1'] -= off; cursor['1'] -= off;
   G.distance = 0; G.score = 0; G.coins = 0; G.near = 0; G.takedowns = 0; G.topSpeed = 0;
-  G.combo = 0; G.comboT = 0; G.timeScale = 1; G.slowT = 0; G.shake = 0;
+  G.combo = 0; G.comboT = 0; G.timeScale = 1; G.slowT = 0; G.shake = 0; G.flash = 0; G.crashT = 0;
   G.nextRowD = 140; G.nextCoinD = 120; G.nextRampD = rand(500, 700);
-  Object.assign(player, { x: 0, vx: 0, y: 0, vy: 0, speed: 0, nitro: 0.35, boosting: false, air: false, roll: 0, rolling: false, pitch: 0, onRamp: null });
+  Object.assign(player, { x: 0, vx: 0, y: 0, vy: 0, speed: 0, nitro: 0.35, boosting: false, air: false, roll: 0, rolling: false, rollT: 0, pitch: 0, onRamp: null, wallSound: 0 });
+  input.steer = 0;
+  clearTimeout(cdTimer); cdEl.innerHTML = '';
+  clearTimeout(hintTimer); $('hint').classList.remove('show');
+  $('popups').innerHTML = '';
   player.group.rotation.set(0, 0, 0); player.body.rotation.set(0, 0, 0); player.group.position.set(0, 0, 0);
   for (const t of traffic) { t.active = false; t.g.visible = false; }
   for (const c of coins) { c.active = false; c.m.visible = false; }
@@ -559,36 +575,38 @@ function resetWorld() {
 
 // ---------------------------------------------------------------- spawning
 function freeCar(kind) { const f = traffic.filter((t) => !t.active && t.T.kind === kind); return f[Math.floor(Math.random() * f.length)]; }
-function spawnRow() {
+const laneBusy = (li, D, range) => traffic.some((t) => t.active && !t.dead && t.lane === li && Math.abs(t.D - D) < range);
+function spawnRow(D) {
   const d = difficulty();
   const maxCars = d < 0.15 ? 1 : d < 0.45 ? 2 : 3;
-  const count = irand(1, maxCars);
-  const lanes = [0, 1, 2, 3].sort(() => Math.random() - 0.5).slice(0, count);
+  // never close the last free lane: count lanes already occupied around this D (earlier rows / slow cars)
+  const busy = [0, 1, 2, 3].filter((li) => laneBusy(li, D, 26)).length;
+  const count = Math.min(irand(1, maxCars), 3 - busy);
+  if (count <= 0) return;
+  const lanes = [0, 1, 2, 3].filter((li) => !laneBusy(li, D, 26)).sort(() => Math.random() - 0.5).slice(0, count);
   const rowSpeed = rand(19, 31);
-  const D = G.distance + 330;
   for (const li of lanes) {
     if (ramps.some((r) => r.active && r.lane === li && D > r.D - 160 && D < r.D + 30)) continue;
     const kind = Math.random() < 0.14 + d * 0.08 ? 'truck' : Math.random() < 0.4 ? 'suv' : 'sedan';
     const t = freeCar(kind) || freeCar('sedan');
     if (!t) continue;
-    t.active = true; t.dead = false; t.passed = false; t.scraped = false;
-    t.D = D + rand(-4, 4); t.x = LANES[li] + rand(-0.25, 0.25); t.speed = rowSpeed * rand(0.95, 1.05) * (kind === 'truck' ? 0.85 : 1);
+    t.active = true; t.dead = false; t.passed = false; t.scraped = false; t.lane = li;
+    t.D = D + rand(-4, 4); t.x = LANES[li] + rand(-0.25, 0.25); t.speed = t.baseSpeed = rowSpeed * rand(0.95, 1.05) * (kind === 'truck' ? 0.85 : 1);
     t.y = 0; t.vy = 0; t.vx = 0; t.g.rotation.set(0, 0, 0);
     repaint(t);
     t.g.children[3].visible = true;
     t.g.visible = true;
   }
 }
-function spawnCoins() {
-  const li = irand(0, 3), base = G.distance + 330;
+function spawnCoins(base) {
+  const li = irand(0, 3);
   for (let i = 0; i < 6; i++) {
     const c = coins.find((q) => !q.active); if (!c) return;
     c.active = true; c.D = base + i * 6; c.x = LANES[li]; c.m.visible = true; c.m.position.set(c.x, 1.0, 0);
   }
 }
-function spawnRamp() {
+function spawnRamp(D) {
   const r = ramps.find((q) => !q.active); if (!r) return;
-  const D = G.distance + 330;
   const free = [0, 1, 2, 3].filter((li) => !traffic.some((t) => t.active && Math.abs(t.x - LANES[li]) < 2 && t.D - G.distance > 120));
   if (!free.length) return;
   r.lane = pick(free); r.x = LANES[r.lane]; r.D = D; r.active = true; r.g.visible = true; r.g.position.x = r.x;
@@ -626,9 +644,11 @@ function takedown(t, dx) {
   sound.takedown(); haptic('heavy');
   player.speed *= 0.93;
 }
-function scrape(t, dir, px) {
-  player.x += dir * (px + 0.05); player.vx = dir * 7; player.speed *= 0.88;
-  if (!t.scraped) { t.scraped = true; sound.scrape(); haptic('medium'); G.combo = 0; }
+function scrape(t, dir, px, dt) {
+  player.x += dir * (px + 0.05); player.vx = dir * 7;
+  // full speed penalty once per car; grinding along it costs a frame-rate independent amount
+  if (!t.scraped) { t.scraped = true; player.speed *= 0.88; sound.scrape(); haptic('medium'); G.combo = 0; }
+  else player.speed *= 1 - dt * 1.5;
   emitSparks(player.x - dir * player.halfW, 0.5, 0, 14, 0.6, 6); G.shake = Math.max(G.shake, 0.35);
 }
 function slowmo(scale, time) { G.timeScale = scale; G.slowT = time; }
@@ -663,7 +683,7 @@ function updateWorld(dt) {
     b.mesh.position.z = -(b.D - G.distance);
   }
   for (const s of ['-1', '1']) if (cursor[s] < G.distance + VIEW_AHEAD) { /* pool keeps up naturally */ }
-  beaconMat.color.copy(hdr(0xff2233, Math.sin(G.t * 3) > 0.6 ? 6 : 0.3));
+  beaconMat.color.setHex(0xff2233).multiplyScalar(Math.sin(G.t * 3) > 0.6 ? 6 : 0.3); // no per-frame allocation
 }
 
 function updatePlaying(dt) {
@@ -736,9 +756,11 @@ function updatePlaying(dt) {
 
   // traffic
   const d = difficulty();
-  if (G.distance + 330 > G.nextRowD) { spawnRow(); G.nextRowD += rand(1, 1.25) * (72 - d * 34); }
-  if (G.distance + 330 > G.nextCoinD) { spawnCoins(); G.nextCoinD += rand(170, 260); }
-  if (G.distance + 330 > G.nextRampD) { spawnRamp(); G.nextRampD += rand(650, 1000); }
+  // spawn at the scheduled absolute D (not distance+330), so catch-up spawns at race start don't stack on one spot
+  if (G.distance + 330 > G.nextRowD) { spawnRow(G.nextRowD); G.nextRowD += rand(1, 1.25) * (72 - d * 34); }
+  if (G.distance + 330 > G.nextCoinD) { spawnCoins(G.nextCoinD); G.nextCoinD += rand(170, 260); }
+  if (G.distance + 330 > G.nextRampD) { spawnRamp(G.nextRampD); G.nextRampD += rand(650, 1000); }
+  trafficAI(dt);
 
   for (const t of traffic) {
     if (!t.active) continue;
@@ -748,10 +770,13 @@ function updatePlaying(dt) {
     if (Math.abs(rel) > 9) continue;
     const dx = P.x - t.x, sumW = P.halfW + t.T.halfW, sumL = P.halfL + t.T.halfL;
     if (Math.abs(dx) < sumW - 0.08 && Math.abs(rel) < sumL - 0.1 && P.y < t.T.height - 0.3) {
-      const px = sumW - Math.abs(dx), pz = sumL - Math.abs(rel);
+      const px = sumW - Math.abs(dx);
+      // swept test: if we already overlapped lengthwise last step, contact came from the side (scrape);
+      // otherwise it's a rear-end (wreck) unless it only clipped a corner. Frame-rate independent.
+      const prevRel = rel + (P.speed - t.speed) * dt;
+      const fromSide = Math.abs(prevRel) < sumL - 0.1 || px < 0.4;
       if (P.boosting && t.T.kind !== 'truck') takedown(t, dx);
-      else if (px < pz * 0.55 && Math.abs(rel) < sumL - 0.6) scrape(t, Math.sign(dx) || 1, px);
-      else if (P.boosting) wreck(t);
+      else if (fromSide) scrape(t, Math.sign(dx) || 1, px, dt);
       else wreck(t);
       if (G.state !== 'playing') return;
     }
@@ -769,6 +794,23 @@ function updatePlaying(dt) {
     if (Math.abs(rel) < 2.4 && Math.abs(P.x - c.x) < 1.7 && P.y < 2.5) {
       c.active = false; c.m.visible = false; G.coins++; G.score += 25; sound.coin();
     }
+  }
+}
+
+// Car-following (no driving through each other in a lane) + wall breaker (rows with different
+// speeds drifting together into a 4-lane block: the rearmost car of the block backs off).
+function trafficAI(dt) {
+  for (const t of traffic) {
+    if (!t.active || t.dead) continue;
+    let target = t.baseSpeed, lanes = 1 << t.lane, rearmost = true;
+    for (const o of traffic) {
+      if (o === t || !o.active || o.dead) continue;
+      const gap = o.D - t.D, minGap = t.T.halfL + o.T.halfL;
+      if (o.lane === t.lane && gap > 0 && gap < minGap + 8) target = Math.min(target, gap < minGap + 2 ? o.speed - 3 : o.speed);
+      if (Math.abs(gap) < minGap + 12) { lanes |= 1 << o.lane; if (gap < 0) rearmost = false; }
+    }
+    if (lanes === 15 && rearmost && t.D - G.distance > 15) target = Math.min(target, t.baseSpeed - 6);
+    t.speed = damp(t.speed, Math.max(8, target), 4, dt);
   }
 }
 
@@ -802,7 +844,9 @@ function updateCamera(dt, realDt) {
     camera.rotateZ(-P.vx * 0.0035);
     const fov = 64 + clamp((P.speed - 50) / 60, 0, 1) * 8 + boostK * 13;
     camera.fov = damp(camera.fov, fov, 4, realDt);
-  } else if (G.state === 'crashing') {
+  } else if (G.state === 'paused') {
+    // keep the gameplay camera frozen (it used to swing into the menu orbit and snap back on resume)
+  } else if (G.state === 'crashing' || G.state === 'over') {
     G.camAngle += realDt * 0.5;
     const cx = P.group.position.x, cy = Math.max(0.5, P.group.position.y);
     tmpV.set(cx + Math.sin(G.camAngle) * 9, 3.2, Math.cos(G.camAngle) * 9 + 2);
@@ -831,7 +875,7 @@ function updateCamera(dt, realDt) {
 
 function updatePlayerVisual(dt) {
   const P = player;
-  if (G.state === 'crashing') {
+  if (G.state === 'crashing' || G.state === 'over') {
     P.vy -= 22 * dt; P.y += P.vy * dt;
     if (P.y < 0) { P.y = 0; P.vy = Math.abs(P.vy) > 2 ? -P.vy * 0.35 : 0; P.spin.multiplyScalar(0.5); if (Math.abs(P.vy) > 1) { emitSparks(P.x, 0.2, 0, 20); sound.land(); } }
     P.speed = Math.max(0, P.speed - 30 * dt); G.distance += P.speed * dt;
@@ -859,15 +903,17 @@ const hud = {
   nitro: $('h-nitro'), ring: $('nitro-ring'), btn: $('btn-nitro'), root: $('hud'),
 };
 function setHud(show) { hud.root.classList.toggle('show', show); }
+const hudCache = {};
+const setText = (k, el, v) => { if (hudCache[k] !== v) { hudCache[k] = v; el.textContent = v; } };
 function updateHud() {
   const P = player;
-  hud.score.textContent = Math.floor(G.score).toLocaleString();
-  hud.mult.textContent = G.combo > 0 ? `x${mult().toFixed(1)}` : '';
-  hud.coins.textContent = G.coins;
-  hud.dist.textContent = (G.distance / 1000).toFixed(1) + ' km';
-  hud.speed.textContent = Math.round(P.speed * 3.6);
-  hud.nitro.style.width = (P.nitro * 100).toFixed(1) + '%';
-  hud.ring.style.strokeDashoffset = (276.5 * (1 - P.nitro)).toFixed(1);
+  setText('score', hud.score, Math.floor(G.score).toLocaleString());
+  setText('mult', hud.mult, G.combo > 0 ? `x${mult().toFixed(1)}` : '');
+  setText('coins', hud.coins, String(G.coins));
+  setText('dist', hud.dist, (G.distance / 1000).toFixed(1) + ' km');
+  setText('speed', hud.speed, String(Math.round(P.speed * 3.6)));
+  const n = (P.nitro * 100).toFixed(1);
+  if (hudCache.nitro !== n) { hudCache.nitro = n; hud.nitro.style.width = n + '%'; hud.ring.style.strokeDashoffset = (276.5 * (1 - P.nitro)).toFixed(1); }
   hud.btn.classList.toggle('ready', P.nitro >= 0.2 && !P.boosting);
   hud.root.classList.toggle('boost', P.boosting);
 }
@@ -876,17 +922,18 @@ function updateHud() {
 const screens = ['loading', 'menu', 'garage', 'settings', 'pause', 'over'];
 function show(name) { for (const s of screens) $(s).classList.toggle('show', s === name); }
 
-function goMenu() {
-  G.state = 'menu'; resetWorld(); player.speed = G.menuSpeed;
+function goMenu(reset = true) {
+  G.state = 'menu'; if (reset) resetWorld(); player.speed = G.menuSpeed;
   setHud(false); show('menu');
   $('m-best').textContent = save.best.toLocaleString(); $('m-coins').textContent = save.coins.toLocaleString();
 }
 function startRace() {
+  if (G.state !== 'menu' && G.state !== 'over') return;
   sound.init(); sound.click();
   resetWorld(); G.state = 'countdown'; G.countdown = 3.4; G.lastCd = 4;
   player.speed = 0; show(null); setHud(true);
   camera.position.set(0, 3.2, 9);
-  const hint = $('hint'); if (save.played < 3) { hint.classList.add('show'); setTimeout(() => hint.classList.remove('show'), 5000); }
+  const hint = $('hint'); if (save.played < 3) { hint.classList.add('show'); hintTimer = setTimeout(() => hint.classList.remove('show'), 5000); }
   save.played++; persist();
 }
 function gameOver() {
@@ -907,6 +954,7 @@ function gameOver() {
 function pauseGame() {
   if (G.state !== 'playing' && G.state !== 'countdown') return;
   G.prevState = G.state; G.state = 'paused'; show('pause'); sound.engine(0, false, false); sound.suspend();
+  releaseInput();
 }
 function resumeGame() { if (G.state !== 'paused') return; sound.resume(); G.state = G.prevState; show(null); }
 
@@ -931,8 +979,8 @@ function renderGarage() {
   else { btn.textContent = `BUY ${p.price}`; if (save.coins < p.price) btn.classList.add('disabled'); }
   $('g-coins').textContent = save.coins.toLocaleString();
 }
-function openGarage() { sound.init(); sound.click(); G.state = 'garage'; gSel = save.paint; player.speed = 0; renderGarage(); show('garage'); }
-function closeGarage() { setPaint(save.paint); goMenu(); }
+function openGarage() { if (G.state !== 'menu') return; sound.init(); sound.click(); G.state = 'garage'; gSel = save.paint; player.speed = 0; renderGarage(); show('garage'); }
+function closeGarage() { if (G.state !== 'garage') return; setPaint(save.paint); goMenu(false); }
 $('btn-buy').onclick = () => {
   const p = PAINTS.find((q) => q.id === gSel);
   if (save.owned.includes(p.id)) { save.paint = p.id; sound.click(); }
@@ -954,17 +1002,19 @@ $('opt-quality').onclick = () => { save.quality = save.quality === 'high' ? 'low
 
 $('btn-play').onclick = startRace;
 $('btn-retry').onclick = startRace;
-$('btn-menu').onclick = () => { sound.click(); goMenu(); };
+$('btn-menu').onclick = () => { if (G.state !== 'over') return; sound.click(); goMenu(); };
 $('btn-garage').onclick = openGarage;
 $('btn-garage-back').onclick = () => { sound.click(); closeGarage(); };
 $('btn-settings').onclick = () => { sound.init(); sound.click(); renderSettings(); show('settings'); };
 $('btn-settings-back').onclick = () => { sound.click(); show('menu'); };
 $('btn-pause').onclick = (e) => { e.stopPropagation(); pauseGame(); };
 $('btn-resume').onclick = () => { sound.click(); resumeGame(); };
-$('btn-quit').onclick = () => { sound.resume(); sound.click(); goMenu(); };
+$('btn-quit').onclick = () => { if (G.state !== 'paused') return; sound.resume(); sound.click(); goMenu(); };
 
 // ---------------------------------------------------------------- input
 const touches = new Map();
+function releaseInput() { touches.clear(); input.left = input.right = 0; input.keys.clear(); mouseDown = false; }
+window.addEventListener('blur', releaseInput);
 function isUi(el) { return el && el.closest && el.closest('button, .panel, .screen.show'); }
 function recountTouches() {
   let l = 0, r = 0;
@@ -972,7 +1022,7 @@ function recountTouches() {
   input.left = l; input.right = r;
 }
 window.addEventListener('touchstart', (e) => {
-  sound.init();
+  if (G.state !== 'paused') sound.init(); // don't un-suspend audio under the pause menu
   for (const t of e.changedTouches) touches.set(t.identifier, { x: t.clientX, y0: t.clientY, t0: performance.now(), ui: !!isUi(t.target), swiped: false });
   recountTouches();
 }, { passive: true });
@@ -986,12 +1036,13 @@ window.addEventListener('touchmove', (e) => {
 }, { passive: true });
 const endTouch = (e) => { for (const t of e.changedTouches) touches.delete(t.identifier); recountTouches(); };
 window.addEventListener('touchend', endTouch, { passive: true });
+for (const ev of ['touchend', 'pointerup', 'click', 'keydown']) window.addEventListener(ev, () => { if (G.state !== 'paused') sound.init(); }, { passive: true, capture: true });
 window.addEventListener('touchcancel', endTouch, { passive: true });
+let mouseDown = false;
 const nitroBtn = $('btn-nitro');
 nitroBtn.addEventListener('touchstart', (e) => { e.preventDefault(); activateNitro(); }, { passive: false });
 nitroBtn.addEventListener('mousedown', activateNitro);
 // mouse fallback (desktop testing)
-let mouseDown = false;
 canvas.addEventListener('mousedown', (e) => { mouseDown = true; input.left = e.clientX < window.innerWidth / 2 ? 1 : 0; input.right = 1 - input.left; });
 window.addEventListener('mouseup', () => { if (mouseDown) { mouseDown = false; input.left = input.right = 0; } });
 window.addEventListener('keydown', (e) => {
@@ -1004,9 +1055,14 @@ window.addEventListener('keyup', (e) => input.keys.delete(e.key));
 window.addEventListener('devicemotion', (e) => {
   const a = e.accelerationIncludingGravity; if (!a || a.x == null) return;
   const ang = ((screen.orientation && screen.orientation.angle) || window.orientation || 0) * Math.PI / 180;
-  const upX = a.x * Math.cos(ang) - a.y * Math.sin(ang);
-  const v = -upX / 4.2;
-  input.tilt = Math.abs(v) < 0.08 ? 0 : clamp(v, -1, 1);
+  // gravity in screen coords (x right, y up) for the current rotation; works for both landscape angles (90/270)
+  const sx = a.x * Math.cos(ang) - a.y * Math.sin(ang);
+  const sy = a.x * Math.sin(ang) + a.y * Math.cos(ang);
+  // roll angle of the screen like a steering wheel; atan2 keeps sensitivity constant whether the phone
+  // is held upright or tipped back toward flat (the old sx/4.2 needed > 90 deg of roll when held flat-ish)
+  const roll = Math.atan2(-sx, Math.max(sy, 2.5));
+  const v = roll / 0.42; // ~24 deg = full lock
+  input.tilt = Math.abs(v) < 0.08 ? 0 : clamp((v - Math.sign(v) * 0.08) / 0.92, -1, 1);
 });
 
 document.addEventListener('visibilitychange', () => { if (document.hidden) { pauseGame(); sound.suspend(); } else if (G.state !== 'paused') sound.resume(); });
@@ -1014,6 +1070,7 @@ initNative({
   onBack: () => {
     if (G.state === 'playing' || G.state === 'countdown') pauseGame();
     else if (G.state === 'paused') resumeGame();
+    else if (G.state === 'crashing') { /* ignore; used to exit the app mid-crash */ }
     else if (G.state === 'garage') closeGarage();
     else if ($('settings').classList.contains('show')) show('menu');
     else if (G.state === 'over') goMenu();
@@ -1035,7 +1092,7 @@ function frame() {
   requestAnimationFrame(frame);
 }
 function step(realDt) {
-  if (G.slowT > 0) { G.slowT -= realDt; if (G.slowT <= 0) G.timeScale = 1; }
+  if (G.slowT > 0 && G.state !== 'paused') { G.slowT -= realDt; if (G.slowT <= 0) G.timeScale = 1; }
   const dt = realDt * (G.state === 'paused' ? 0 : G.timeScale);
   G.t += dt;
 
@@ -1049,14 +1106,12 @@ function step(realDt) {
       cdEl.innerHTML = n > 0 ? `<span class="n">${n}</span>` : '<span class="n">GO!</span>';
       sound.beep(n <= 0); if (n <= 0) haptic('medium');
     }
-    if (G.countdown <= 0) { G.state = 'playing'; setTimeout(() => (cdEl.innerHTML = ''), 700); player.speed = 30; }
+    if (G.countdown <= 0) { G.state = 'playing'; clearTimeout(cdTimer); cdTimer = setTimeout(() => (cdEl.innerHTML = ''), 700); player.speed = 30; }
   } else if (G.state === 'playing') updatePlaying(dt);
   else if (G.state === 'crashing') {
     G.crashT += realDt;
     for (const t of traffic) if (t.active) updateTrafficCar(t, dt);
     if (G.crashT > 2.3) gameOver();
-  } else if (G.state === 'over') {
-    G.distance += Math.max(0, player.speed) * dt;
   }
 
   if (G.state !== 'paused') {
@@ -1070,8 +1125,9 @@ function step(realDt) {
   // speed lines & post fx
   const P = player;
   const playing = G.state === 'playing';
+  const fxDt = G.state === 'paused' ? 0 : realDt; // freeze speed lines / blur under the pause menu
   const lineK = playing ? clamp((P.speed - 60) / 50, 0, 1) * 0.12 + (P.boosting ? 0.22 : 0) : 0;
-  lineMesh.material.opacity = damp(lineMesh.material.opacity, lineK, 6, realDt);
+  if (fxDt) lineMesh.material.opacity = damp(lineMesh.material.opacity, lineK, 6, fxDt);
   if (lineMesh.material.opacity > 0.01) {
     for (let i = 0; i < LINES; i++) {
       const l = lines[i]; l.z += P.speed * 1.6 * dt;
@@ -1081,10 +1137,11 @@ function step(realDt) {
     lineMesh.instanceMatrix.needsUpdate = true;
   }
   const blurT = playing ? clamp((P.speed - 60) / 50, 0, 1) * 0.04 + (P.boosting ? 0.07 : 0) : G.state === 'crashing' ? 0.04 : 0;
-  speedPass.uniforms.strength.value = damp(speedPass.uniforms.strength.value, blurT, 5, realDt);
+  speedPass.uniforms.strength.value = damp(speedPass.uniforms.strength.value, blurT, 5, fxDt);
   speedPass.uniforms.ca.value = speedPass.uniforms.strength.value * 0.06;
   if (G.flash > 0) { G.flash = Math.max(0, G.flash - realDt * 1.5); }
-  flashEl.style.opacity = (G.flash * 0.35).toFixed(3);
+  const fo = (G.flash * 0.35).toFixed(3);
+  if (fo !== flashEl._o) flashEl.style.opacity = flashEl._o = fo; // avoid per-frame style writes
 
   sound.engine(P.speed, P.boosting, (playing || G.state === 'countdown' || G.state === 'menu') && G.state !== 'paused' && !!sound.ctx);
   if (playing || G.state === 'countdown') updateHud();
@@ -1106,4 +1163,5 @@ function step(realDt) {
   clock.getDelta();
   requestAnimationFrame(frame);
   window.__G = G; window.__player = player; window.__traffic = traffic;
+  window.__dbg = { traffic, buildings, coins, ramps, cursor, camera, input };
 })();
