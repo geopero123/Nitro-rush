@@ -9,6 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Sound } from './audio.js';
 import { haptic, initNative, exitApp, isNative } from './native.js';
+import { createRace, TRACKS, REWARDS, ordinal, fmtTime } from './race.js';
 
 // ---------------------------------------------------------------- helpers
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -456,6 +457,16 @@ function addTraffic(kind, n) {
 }
 addTraffic('sedan', 16); addTraffic('suv', 10); addTraffic('truck', 6);
 
+// a standalone civilian car for race mode
+function makeCivilian(kind) {
+  const T = CAR_TYPES[kind];
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(T.body, kind === 'truck' ? TRUCK_MATS[0] : PAINT_MATS[0]);
+  g.add(body, new THREE.Mesh(T.dark, darkMat), new THREE.Mesh(T.lights, kind === 'truck' ? truckMarkerMat : tailMat));
+  const streak = new THREE.Group(); for (const sx of [-1, 1]) { const m = new THREE.Mesh(streakGeo, streakMat); m.scale.set(0.5, 1, kind === 'truck' ? 4.5 : 3.5); m.position.x = sx * T.halfW * 0.65; streak.add(m); } streak.position.z = T.halfL; g.add(streak);
+  return { g, T, streak, repaint: () => { body.material = kind === 'truck' ? pick(TRUCK_MATS) : pick(PAINT_MATS); } };
+}
+
 // ---------------------------------------------------------------- coins / ramps / particles
 const coinGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.12, 22).rotateX(Math.PI / 2);
 const coinMat = new THREE.MeshStandardMaterial({ color: 0xffc23d, metalness: 1, roughness: 0.25, emissive: 0xffa000, emissiveIntensity: 0.9 });
@@ -586,7 +597,7 @@ const sound = new Sound();
 sound.sfxOn = save.sound; sound.musicOn = save.music;
 
 const G = {
-  state: 'loading', distance: 0, score: 0, coins: 0, near: 0, takedowns: 0, topSpeed: 0,
+  state: 'loading', mode: 'endless', distance: 0, score: 0, coins: 0, near: 0, takedowns: 0, topSpeed: 0,
   combo: 0, comboT: 0, timeScale: 1, slowT: 0, shake: 0, flash: 0, t: 0, nextRowD: 0, nextCoinD: 0, nextRampD: 0,
   countdown: 0, crashT: 0, camAngle: 0, menuSpeed: 26,
 };
@@ -711,7 +722,7 @@ function wreck(t) {
 }
 
 function activateNitro() {
-  if (G.state !== 'playing' || player.boosting || player.nitro < 0.2) return;
+  if (G.state !== 'playing' || player.boosting || player.nitro < 0.2 || player.wrecked) return;
   player.boosting = true; sound.nitro(); haptic('medium'); G.shake = Math.max(G.shake, 0.4);
 }
 
@@ -730,14 +741,17 @@ function updateWorld(dt) {
   beaconMat.color.setHex(0xff2233).multiplyScalar(Math.sin(G.t * 3) > 0.6 ? 6 : 0.3); // no per-frame allocation
 }
 
-function updatePlaying(dt) {
-  const P = player;
-  // steering input
+function readSteer(dt) {
   let s = input.right - input.left;
   if (input.keys.has('ArrowLeft') || input.keys.has('a')) s -= 1;
   if (input.keys.has('ArrowRight') || input.keys.has('d')) s += 1;
   if (save.controls === 'tilt') s = clamp(s + input.tilt, -1, 1);
   input.steer = damp(input.steer, clamp(s, -1, 1), 14, dt);
+  return input.steer;
+}
+function updatePlaying(dt) {
+  const P = player;
+  readSteer(dt);
 
   const steerSpeed = 15 + P.speed * 0.09;
   P.vx = damp(P.vx, input.steer * steerSpeed, P.air ? 2 : 9, dt);
@@ -963,10 +977,11 @@ function updateHud() {
 }
 
 // ---------------------------------------------------------------- screens
-const screens = ['loading', 'menu', 'garage', 'settings', 'pause', 'over'];
+const screens = ['loading', 'menu', 'garage', 'settings', 'pause', 'over', 'tracks', 'results'];
 function show(name) { for (const s of screens) $(s).classList.toggle('show', s === name); }
 
 function goMenu(reset = true) {
+  if (G.mode === 'race') { race.exit(); G.mode = 'endless'; reset = true; }
   G.state = 'menu'; if (reset) resetWorld(); player.speed = G.menuSpeed;
   setHud(false); show('menu');
   $('m-best').textContent = save.best.toLocaleString(); $('m-coins').textContent = save.coins.toLocaleString();
@@ -1117,7 +1132,7 @@ initNative({
     else if (G.state === 'crashing') { /* ignore; used to exit the app mid-crash */ }
     else if (G.state === 'garage') closeGarage();
     else if ($('settings').classList.contains('show')) show('menu');
-    else if (G.state === 'over') goMenu();
+    else if (G.state === 'over' || G.state === 'results' || G.state === 'tracks') goMenu(G.state !== 'tracks');
     else exitApp();
   },
   onPause: () => { pauseGame(); sound.suspend(); },
@@ -1151,20 +1166,22 @@ function step(realDt) {
       sound.beep(n <= 0); if (n <= 0) haptic('medium');
     }
     if (G.countdown <= 0) { G.state = 'playing'; clearTimeout(cdTimer); cdTimer = setTimeout(() => (cdEl.innerHTML = ''), 700); player.speed = 30; }
-  } else if (G.state === 'playing') updatePlaying(dt);
+  } else if (G.state === 'playing') { if (G.mode !== 'race') updatePlaying(dt); }
   else if (G.state === 'crashing') {
     G.crashT += realDt;
     for (const t of traffic) if (t.active) updateTrafficCar(t, dt);
     if (G.crashT > 2.3) gameOver();
   }
 
-  if (G.state !== 'paused') {
+  if (G.mode === 'race') {
+    if (G.state !== 'paused') { race.step(dt, realDt); updateSparks(dt); }
+  } else if (G.state !== 'paused') {
     updateWorld(dt);
     if (G.state !== 'playing' && G.state !== 'crashing') for (const t of traffic) if (t.active) updateTrafficCar(t, dt);
     updatePlayerVisual(dt);
     updateSparks(dt);
   }
-  updateCamera(dt, realDt);
+  if (G.mode !== 'race') updateCamera(dt, realDt);
 
   // speed lines & post fx
   const P = player;
@@ -1189,7 +1206,94 @@ function step(realDt) {
 
   sound.engine(P.speed, P.boosting, (playing || G.state === 'countdown' || G.state === 'menu') && G.state !== 'paused' && !!sound.ctx);
   if (playing || G.state === 'countdown') updateHud();
+  if (G.mode === 'race' && (playing || G.state === 'countdown')) updateRaceHud();
 }
+
+// ---------------------------------------------------------------- race mode glue
+let race = null;
+const raceEls = { pos: $('rh-pos'), tot: $('rh-tot'), lap: $('rh-lap'), time: $('rh-time'), map: $('rh-map').getContext('2d') };
+let raceHudFrame = 0, raceTrack = 0;
+function updateRaceHud() {
+  const h = race.hudInfo();
+  const pos = String(h.pos), lap = `LAP ${h.lap}/${h.laps}`, tm = fmtTime(h.t);
+  if (raceEls.pos._v !== pos) raceEls.pos.textContent = raceEls.pos._v = pos;
+  if (raceEls.lap._v !== lap) { if (raceEls.lap._v && h.lap > 1 && h.lap === h.laps) popup('FINAL LAP', 'info'); raceEls.lap.textContent = raceEls.lap._v = lap; }
+  if (raceEls.time._v !== tm) raceEls.time.textContent = raceEls.time._v = tm;
+  if ((raceHudFrame++ & 1) === 0) race.drawMap(raceEls.map);
+}
+function setEndlessVisible(v) {
+  scroller.visible = lamps.visible = skyline.visible = ground.visible = v;
+  for (const b of buildings) b.mesh.visible = v;
+  if (!v) { for (const t of traffic) t.g.visible = false; for (const c of coins) c.m.visible = false; for (const r of ramps) r.g.visible = false; }
+}
+const DEFAULT_THEME = { fog: 0x1a0d33, top: 0x040210, density: 0.0058 };
+function setTheme(th) {
+  th = th || DEFAULT_THEME;
+  FOG.set(th.fog); scene.fog.color.set(th.fog); scene.fog.density = th.density;
+  sky.material.uniforms.top.value.set(th.top);
+}
+function raceHud(on, def) {
+  hud.root.classList.toggle('race', !!on);
+  if (on) { raceEls.tot.textContent = '/6'; raceEls.pos._v = raceEls.lap._v = raceEls.time._v = null; }
+}
+function trackPreview(def, size) {
+  const c = document.createElement('canvas'); c.width = c.height = size; const g = c.getContext('2d');
+  const curve = new THREE.CatmullRomCurve3(def.pts.map(([x, z]) => new THREE.Vector3(x, 0, z)), true, 'centripetal');
+  const pts = curve.getSpacedPoints(200);
+  let a = 1e9, b = -1e9, cc = 1e9, d = -1e9; for (const p of pts) { a = Math.min(a, p.x); b = Math.max(b, p.x); cc = Math.min(cc, p.z); d = Math.max(d, p.z); }
+  const sc = (size * 0.8) / Math.max(b - a, d - cc), ox = size / 2 - ((a + b) / 2) * sc, oz = size / 2 - ((cc + d) / 2) * sc;
+  g.lineJoin = 'round';
+  for (const [w, col] of [[10, 'rgba(255,46,136,0.35)'], [4, '#fff']]) { g.lineWidth = w; g.strokeStyle = col; g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(p.x * sc + ox, p.z * sc + oz) : g.moveTo(p.x * sc + ox, p.z * sc + oz))); g.closePath(); g.stroke(); }
+  g.fillStyle = '#ffcc33'; g.fillRect(pts[0].x * sc + ox - 5, pts[0].z * sc + oz - 5, 10, 10);
+  return { c, len: curve.getLength() };
+}
+function openTracks() {
+  if (G.state !== 'menu' && G.state !== 'results') return;
+  sound.init(); sound.click();
+  if (G.mode === 'race') goMenu();
+  G.state = 'tracks';
+  const box = $('track-cards'); box.innerHTML = '';
+  TRACKS.forEach((def, i) => {
+    const el = document.createElement('div'); el.className = 'tcard';
+    const { c, len } = trackPreview(def, 220);
+    const best = save.trackBest && save.trackBest[def.id];
+    el.append(c);
+    el.insertAdjacentHTML('beforeend', `<b>${def.name}</b><small>${def.sub}</small><small>${(len / 1000).toFixed(1)} km · ${def.laps} laps</small><small class="best">${best ? 'BEST ' + fmtTime(best) : '1st: +' + REWARDS[0] + ' coins'}</small>`);
+    el.onclick = () => startRaceMode(i);
+    box.append(el);
+  });
+  show('tracks');
+}
+function startRaceMode(idx) {
+  if (G.state !== 'tracks' && G.state !== 'results') return;
+  sound.init(); sound.click();
+  if (G.mode === 'race') race.exit();
+  resetWorld(); G.mode = 'race'; raceTrack = idx;
+  show(null); setHud(true);
+  race.start(idx);
+  G.state = 'countdown'; G.countdown = 3.4; G.lastCd = 4; player.speed = 0; G.topSpeed = 0;
+  save.played++; persist();
+}
+function raceFinished(pos, time, results, takedowns, def) {
+  G.state = 'results';
+  setHud(false);
+  const reward = REWARDS[pos - 1] + takedowns * 20;
+  save.coins += reward;
+  save.trackBest = save.trackBest || {};
+  const prev = save.trackBest[def.id], isBest = pos === 1 && (!prev || time < prev);
+  if (isBest || (!prev && pos === 1)) save.trackBest[def.id] = time;
+  persist();
+  const t = $('r-title'); t.textContent = pos === 1 ? '1ST PLACE!' : `${ordinal(pos).toUpperCase()} PLACE`; t.classList.toggle('win', pos === 1);
+  $('r-time').textContent = `${def.name} · ${fmtTime(time)}${isBest ? ' · ★ NEW RECORD' : ''}`;
+  $('r-list').innerHTML = results.map((r, i) => `<span>${i + 1}</span><span class="${r.you ? 'you' : ''}">${r.name}</span><span class="${r.you ? 'you' : ''}">${fmtTime(r.t)}</span>`).join('');
+  $('r-reward').innerHTML = `<i class="coin"></i> +${reward} coins${takedowns ? ` (incl. ${takedowns} takedown${takedowns > 1 ? 's' : ''})` : ''}`;
+  show('results');
+}
+$('btn-race').onclick = openTracks;
+$('btn-tracks-back').onclick = () => { sound.click(); goMenu(false); };
+$('btn-r-next').onclick = () => startRaceMode((raceTrack + 1) % TRACKS.length);
+$('btn-r-retry').onclick = () => startRaceMode(raceTrack);
+$('btn-r-menu').onclick = () => { if (G.state === 'results') { sound.click(); goMenu(); } };
 
 // ---------------------------------------------------------------- boot
 (async function boot() {
@@ -1200,10 +1304,15 @@ function step(realDt) {
     console.error(e); $('loadtext').textContent = 'Failed to load car: ' + e.message; return;
   }
   $('loadbar').style.width = '100%';
+  race = createRace({
+    scene, camera, sky, player, sound, haptic, G, input, popup, emitSparks, readSteer, hdr,
+    slowmo, setEndlessVisible, setTheme, raceHud, onFinish: raceFinished, makeCivilian,
+    roadTex, roadRough, walkTex, glowTex, chevronTex, skylineTex, buildingGeo, WIN_MATS, NEON_MATS, SIGNS,
+  });
   renderer.compile(scene, camera);
   goMenu();
   clock.getDelta();
   requestAnimationFrame(frame);
-  window.__G = G; window.__player = player;
+  window.__G = G; window.__player = player; window.__race = race;
   window.__dbg = { traffic, buildings, coins, ramps, cursor, camera, input };
 })();
