@@ -9,6 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Sound } from './audio.js';
 import { loadTraffic, poolModels, buildCar, repaint } from './cars.js';
+import { createCity } from './city.js';
 import { haptic, initNative, exitApp, isNative } from './native.js';
 
 // ---------------------------------------------------------------- helpers
@@ -97,6 +98,7 @@ function applyQuality() {
   renderer.setPixelRatio(pr);
   composer.setPixelRatio(pr);
   bloom.enabled = hi;
+  city.setQuality(hi);
   resize();
 }
 function resize() {
@@ -324,78 +326,9 @@ scene.add(lamps);
   lamps.add(poles, heads, pools);
 }
 
-// ---------------------------------------------------------------- buildings
-const WIN_MATS = [
-  windowTex(['#ffd08a', '#ffe3b0', '#ffb860'], 0.32),
-  windowTex(['#9fd8ff', '#c8ecff', '#7ab8ff'], 0.3),
-  windowTex(['#ffd08a', '#9fd8ff', '#ff7ac8', '#ffffff'], 0.38),
-  windowTex(['#ffe3b0', '#ffffff'], 0.18),
-].map((t) => { t.wrapS = t.wrapT = THREE.RepeatWrapping; return new THREE.MeshStandardMaterial({ map: t, emissiveMap: t, emissive: 0xffffff, emissiveIntensity: 0.95, roughness: 0.55, metalness: 0.4, envMapIntensity: 0.6 }); });
-
-function buildingGeo(w, h, dep) {
-  const g = new THREE.BoxGeometry(dep, h, w);
-  const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), y = pos.getY(i) + h / 2, z = pos.getZ(i), nx = nor.getX(i), ny = nor.getY(i);
-    if (Math.abs(ny) > 0.5) uv.setXY(i, 0.01, 0.01);
-    else if (Math.abs(nx) > 0.5) uv.setXY(i, (z + w / 2) / 16, y / 24);
-    else uv.setXY(i, (x + dep / 2) / 16, y / 24);
-  }
-  g.translate(0, h / 2, 0);
-  g.userData = { w, h, dep };
-  return g;
-}
-const B_GEOS = [];
-for (let i = 0; i < 18; i++) B_GEOS.push(buildingGeo(rand(10, 24), Math.random() < 0.25 ? rand(60, 110) : rand(16, 55), rand(12, 22)));
-const NEON_MATS = [0xff2e88, 0x22e6ff, 0x9a5cff, 0xffb040, 0x44ff99].map((c) => new THREE.MeshBasicMaterial({ color: hdr(c, 4) }));
-const SIGNS = ['HOTEL', 'BAR', 'CLUB', '24H', 'CAFE', 'TAXI', 'ARCADE', 'MOTEL', 'NOODLE', 'NEON', 'DINER', 'OPEN'].map((t) => {
-  const col = pick(['#ff2e88', '#22e6ff', '#ffb040', '#b27cff', '#5dff9a']);
-  return { len: t.length, mat: new THREE.MeshBasicMaterial({ map: signTex(t, col), color: new THREE.Color(2.4, 2.4, 2.4) }) };
-});
-const beaconMat = new THREE.MeshBasicMaterial({ color: hdr(0xff2233, 5) });
-const neonGeo = new THREE.BoxGeometry(0.3, 1, 0.3).translate(0, 0.5, 0);
-const signGeo = new THREE.PlaneGeometry(1, 1);
-const beaconGeo = new THREE.SphereGeometry(0.4, 8, 6);
-
-const buildings = [];
-const cursor = { '-1': -BEHIND, '1': -BEHIND };
-for (const side of [-1, 1]) for (let i = 0; i < 30; i++) {
-  const mesh = new THREE.Mesh(B_GEOS[0], WIN_MATS[0]);
-  const neon = new THREE.Mesh(neonGeo, NEON_MATS[0]);
-  const sign = new THREE.Mesh(signGeo, SIGNS[0].mat);
-  const beacon = new THREE.Mesh(beaconGeo, beaconMat);
-  mesh.add(neon, sign, beacon);
-  scene.add(mesh);
-  const b = { mesh, neon, sign, beacon, side, D: 0, len: 10 };
-  placeBuilding(b);
-  buildings.push(b);
-}
-function placeBuilding(b) {
-  const geo = pick(B_GEOS), u = geo.userData, s = b.side;
-  b.mesh.geometry = geo; b.mesh.material = pick(WIN_MATS);
-  b.len = u.w;
-  b.D = cursor[s] + rand(0.5, 6) + u.w / 2;
-  cursor[s] = b.D + u.w / 2;
-  b.mesh.position.x = s * (14.6 + u.dep / 2 + rand(0, 4));
-  // neon edge strip
-  b.neon.visible = Math.random() < 0.4;
-  if (b.neon.visible) {
-    b.neon.material = pick(NEON_MATS);
-    b.neon.scale.y = u.h * rand(0.45, 0.98);
-    b.neon.position.set(-s * u.dep / 2, 0, (Math.random() < 0.5 ? 1 : -1) * u.w / 2);
-  }
-  // blade sign
-  b.sign.visible = Math.random() < 0.45 && u.h > 12;
-  if (b.sign.visible) {
-    const sg = pick(SIGNS);
-    b.sign.material = sg.mat;
-    const sh = 0.75 * sg.len + 0.4;
-    b.sign.scale.set(1.25, sh * 1.25, 1);
-    b.sign.position.set(-s * (u.dep / 2 + 1.1), rand(4 + sh / 2, Math.min(u.h - sh, 16)), u.w / 2 - 1.2);
-  }
-  b.beacon.visible = u.h > 58;
-  b.beacon.position.set(0, u.h + 0.4, 0);
-}
+// ---------------------------------------------------------------- city (buildings, billboards, gantries, overpasses, palms)
+const city = createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso: MAX_ANISO });
+const { buildings, cursor } = city;
 
 // ---------------------------------------------------------------- traffic cars (models in cars.js)
 const streakMat = new THREE.MeshBasicMaterial({ map: streakTex, color: new THREE.Color(0.8, 0.05, 0.05), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
@@ -677,13 +610,7 @@ function updateWorld(dt) {
   // road & lamps scroll
   scroller.position.z = G.distance % PERIOD;
   lamps.position.z = G.distance % LAMP_P;
-  // buildings
-  for (const b of buildings) {
-    if (b.D + b.len / 2 < G.distance - BEHIND) placeBuilding(b);
-    b.mesh.position.z = -(b.D - G.distance);
-  }
-  for (const s of ['-1', '1']) if (cursor[s] < G.distance + VIEW_AHEAD) { /* pool keeps up naturally */ }
-  beaconMat.color.setHex(0xff2233).multiplyScalar(Math.sin(G.t * 3) > 0.6 ? 6 : 0.3); // no per-frame allocation
+  city.update(G.distance, G.t);
 }
 
 function updatePlaying(dt) {
