@@ -515,11 +515,19 @@ export function createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso = 4 }) {
     beaconMat.color.setHex(0xff2233).multiplyScalar(Math.sin(t * 3) > 0.6 ? 6 : 0.3);
   }
 
+  let hiQ = true, shown = true;
   function setQuality(hi) {
-    for (const b of buildings) if (Math.abs(b.side) === 2) b.mesh.visible = hi;
+    hiQ = hi;
+    for (const b of buildings) if (Math.abs(b.side) === 2) b.mesh.visible = hi && shown;
+  }
+  /** show/hide the whole straight-highway city (race mode hides it) */
+  function setVisible(v) {
+    shown = v; props.visible = v;
+    for (const st of structures) st.g.visible = v && st.active;
+    for (const b of buildings) b.mesh.visible = v && (Math.abs(b.side) !== 2 || hiQ);
   }
 
-  return { buildings, cursor, update, setQuality, facadeMat, structures };
+  return { buildings, cursor, update, setQuality, setVisible, facadeMat, structures };
 }
 
 // ================================================================ structures & props (world-placeable)

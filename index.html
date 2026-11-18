@@ -26,8 +26,9 @@
         <div><small>BEST</small><b id="m-best">0</b></div>
         <div><small>COINS</small><b><i class="coin"></i><span id="m-coins">0</span></b></div>
       </div>
-      <button id="btn-play" class="btn big">RACE</button>
+      <button id="btn-race" class="btn big">RACE</button>
       <div class="row">
+        <button id="btn-play" class="btn">ENDLESS</button>
         <button id="btn-garage" class="btn">GARAGE</button>
         <button id="btn-settings" class="btn">SETTINGS</button>
       </div>
@@ -63,6 +64,11 @@
       <div class="score"><b id="h-score">0</b><small id="h-mult"></small></div>
       <div class="hud-coins"><i class="coin"></i><b id="h-coins">0</b><small id="h-dist">0.0 km</small></div>
     </div>
+    <div id="race-hud">
+      <div class="rpos"><b id="rh-pos">1</b><small id="rh-tot">/6</small></div>
+      <div class="rinfo"><div id="rh-lap">LAP 1/2</div><div id="rh-time">0:00.00</div></div>
+      <canvas id="rh-map" width="150" height="150"></canvas>
+    </div>
     <div id="popups"></div>
     <div id="countdown"></div>
     <div id="speedo">
@@ -71,6 +77,28 @@
     </div>
     <button id="btn-nitro"><span>NITRO</span><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" class="track"/><circle cx="50" cy="50" r="44" class="fill" id="nitro-ring"/></svg></button>
     <div id="hint">Hold <b>LEFT</b> / <b>RIGHT</b> side to steer · <b>Swipe up</b> or tap <b>NITRO</b> · Hit cars with nitro for <b>TAKEDOWNS</b></div>
+  </div>
+
+  <div id="tracks" class="screen dim">
+    <div class="panel wide">
+      <h2>CHOOSE TRACK</h2>
+      <div id="track-cards"></div>
+      <button id="btn-tracks-back" class="btn ghost">BACK</button>
+    </div>
+  </div>
+
+  <div id="results" class="screen dim">
+    <div class="panel wide">
+      <h2 id="r-title">1ST PLACE</h2>
+      <div id="r-time" class="sub"></div>
+      <div id="r-list"></div>
+      <div id="r-reward" class="sub"></div>
+      <div class="row">
+        <button id="btn-r-next" class="btn big">NEXT</button>
+        <button id="btn-r-retry" class="btn">RETRY</button>
+        <button id="btn-r-menu" class="btn ghost">MENU</button>
+      </div>
+    </div>
   </div>
 
   <div id="pause" class="screen dim">

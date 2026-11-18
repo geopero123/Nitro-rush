@@ -48,8 +48,8 @@ if (reflK > 0.0) {
 
   function setSize(w, h) { rt.setSize(Math.max(64, Math.round(w / 4)), Math.max(32, Math.round(h / 4))); }
 
-  function render() {
-    if (!enabled) { uniforms.reflK.value = 0; return; }
+  function render(active = true) {
+    if (!enabled || !active) { uniforms.reflK.value = 0; return; }
     uniforms.reflK.value = 0.75;
     camera.updateMatrixWorld();
     camPos.setFromMatrixPosition(camera.matrixWorld);
