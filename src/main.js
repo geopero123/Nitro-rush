@@ -6,10 +6,9 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Sound } from './audio.js';
 import { loadTraffic, poolModels, buildCar, repaint } from './cars.js';
-import { createCity } from './city.js';
+import { createCity, makeRoadMaterial, makeSidewalkMaterial, makeStreetlightParts } from './city.js';
 import { createRoadReflection, markReflective, createSmoke, createDebris, createFlameMaterial } from './fx.js';
 import { haptic, initNative, exitApp, isNative } from './native.js';
 
@@ -67,7 +66,7 @@ scene.add(camera);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.85, 0.55, 0.82);
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.72, 0.42, 0.95);
 composer.addPass(bloom);
 // Radial speed blur: 6 taps + one extra pair of reads for chromatic aberration (was 24 reads).
 // Disabled entirely when idle and on LOW quality; the vignette lives in CSS (#vignette) so toggling is seamless.
@@ -126,39 +125,6 @@ function canvasTex(w, h, draw, srgb = true) {
   t.anisotropy = MAX_ANISO;
   return t;
 }
-const pxRoad = (m) => (m / ROAD_W + 0.5) * 512;
-
-const roadTex = canvasTex(512, 512, (g, w, h) => {
-  g.fillStyle = '#1a1920'; g.fillRect(0, 0, w, h);
-  for (let i = 0; i < 14000; i++) { const v = (18 + Math.random() * 26) | 0; g.fillStyle = `rgb(${v},${v},${v + 5})`; g.fillRect(Math.random() * w, Math.random() * h, 1.6, 1.6); }
-  for (const lc of LANES) for (const o of [-0.85, 0.85]) { g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(pxRoad(lc + o) - 9, 0, 18, h); }
-  g.fillStyle = '#0f0f14'; g.fillRect(0, 0, pxRoad(-ROAD_HALF), h); g.fillRect(pxRoad(ROAD_HALF), 0, w, h);
-  g.fillStyle = '#efe6c8';
-  g.fillRect(pxRoad(-ROAD_HALF) - 2, 0, 7, h); g.fillRect(pxRoad(ROAD_HALF) - 5, 0, 7, h);
-  for (const m of [-3.6, 0, 3.6]) g.fillRect(pxRoad(m) - 3, 0, 6, h * 0.36);
-});
-roadTex.wrapS = roadTex.wrapT = THREE.RepeatWrapping;
-
-const roadRough = canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = 'rgb(150,150,150)'; g.fillRect(0, 0, w, h);
-  for (let i = 0; i < 26; i++) {
-    const x = Math.random() * w, y = Math.random() * h, r = rand(10, 46);
-    const gr = g.createRadialGradient(x, y, 0, x, y, r);
-    gr.addColorStop(0, 'rgba(20,20,20,0.95)'); gr.addColorStop(1, 'rgba(20,20,20,0)');
-    g.fillStyle = gr; g.beginPath(); g.ellipse(x, y, r * 0.7, r * 1.4, 0, 0, Math.PI * 2); g.fill();
-  }
-}, false);
-roadRough.wrapS = roadRough.wrapT = THREE.RepeatWrapping;
-
-const walkTex = canvasTex(128, 256, (g, w, h) => {
-  g.fillStyle = '#26242c'; g.fillRect(0, 0, w, h);
-  g.strokeStyle = '#18171c'; g.lineWidth = 2;
-  for (let i = 0; i <= 8; i++) { g.beginPath(); g.moveTo(0, (i * h) / 8); g.lineTo(w, (i * h) / 8); g.stroke(); }
-  g.beginPath(); g.moveTo(w / 2, 0); g.lineTo(w / 2, h); g.stroke();
-  g.fillStyle = '#3a3842'; g.fillRect(0, 0, 8, h);
-});
-walkTex.wrapS = walkTex.wrapT = THREE.RepeatWrapping;
-
 const glowTex = canvasTex(128, 128, (g, w, h) => {
   const gr = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);
   gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.4, 'rgba(255,255,255,0.35)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
@@ -172,32 +138,6 @@ const streakTex = canvasTex(64, 256, (g, w, h) => {
   gx.addColorStop(0, 'rgba(0,0,0,1)'); gx.addColorStop(0.5, 'rgba(0,0,0,0)'); gx.addColorStop(1, 'rgba(0,0,0,1)');
   g.globalCompositeOperation = 'destination-out'; g.fillStyle = gx; g.fillRect(0, 0, w, h);
 });
-
-function windowTex(palette, litChance) {
-  return canvasTex(256, 384, (g, w, h) => {
-    g.fillStyle = '#0b0c13'; g.fillRect(0, 0, w, h);
-    const cols = 12, rows = 10, cw = w / cols, rh = h / rows;
-    for (let r = 0; r < rows; r++) {
-      g.fillStyle = '#07080d'; g.fillRect(0, r * rh, w, 3);
-      for (let c = 0; c < cols; c++) {
-        const lit = Math.random() < litChance;
-        g.fillStyle = lit ? pick(palette) : `rgb(${16 + Math.random() * 10},${20 + Math.random() * 10},${32 + Math.random() * 14})`;
-        g.globalAlpha = lit ? rand(0.55, 1) : 1;
-        g.fillRect(c * cw + 4, r * rh + 8, cw - 8, rh - 14);
-        g.globalAlpha = 1;
-      }
-    }
-  });
-}
-
-function signTex(text, color) {
-  return canvasTex(96, 64 * text.length + 32, (g, w, h) => {
-    g.fillStyle = '#05040a'; g.fillRect(0, 0, w, h);
-    g.strokeStyle = color; g.lineWidth = 5; g.strokeRect(6, 6, w - 12, h - 12);
-    g.fillStyle = color; g.font = 'bold 54px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
-    [...text].forEach((ch, i) => g.fillText(ch, w / 2, 48 + i * 64));
-  });
-}
 
 const chevronTex = canvasTex(256, 512, (g, w, h) => {
   g.fillStyle = '#120a18'; g.fillRect(0, 0, w, h);
@@ -283,14 +223,15 @@ const scroller = new THREE.Group();
 scene.add(scroller);
 const TRACK_LEN = VIEW_AHEAD + BEHIND + PERIOD * 2; // multiple of 12
 {
-  roadTex.repeat.set(1, TRACK_LEN / PERIOD); roadRough.repeat.set(1, TRACK_LEN / PERIOD);
-  const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, TRACK_LEN), new THREE.MeshStandardMaterial({ map: roadTex, roughnessMap: roadRough, roughness: 1, metalness: 0.05, envMapIntensity: 1.3 }));
+  const roadMat = makeRoadMaterial({ lanes: LANES, roadHalf: ROAD_HALF, roadW: ROAD_W, maxAniso: MAX_ANISO });
+  roadMat.map.repeat.set(1, TRACK_LEN / PERIOD); roadMat.roughnessMap.repeat.set(1, TRACK_LEN / PERIOD);
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, TRACK_LEN), roadMat);
   road.rotation.x = -Math.PI / 2; road.position.z = BEHIND + PERIOD - TRACK_LEN / 2;
   scroller.add(road);
   refl.patchRoad(road.material);
 
-  walkTex.repeat.set(1, TRACK_LEN / PERIOD);
-  const walkMat = new THREE.MeshStandardMaterial({ map: walkTex, roughness: 0.8 });
+  const walkMat = makeSidewalkMaterial(MAX_ANISO);
+  walkMat.map.repeat.set(1, TRACK_LEN / PERIOD);
   for (const side of [-1, 1]) {
     const walk = new THREE.Mesh(new THREE.PlaneGeometry(6, TRACK_LEN), walkMat);
     walk.rotation.x = -Math.PI / 2; walk.position.set(side * 11.5, 0.2, road.position.z); scroller.add(walk);
@@ -312,15 +253,11 @@ const LAMP_P = 36;
 const lamps = new THREE.Group();
 scene.add(lamps);
 {
-  const poleGeo = mergeGeometries([
-    new THREE.CylinderGeometry(0.1, 0.16, 9, 8).translate(0, 4.5, 0),
-    new THREE.BoxGeometry(2.8, 0.14, 0.14).translate(-1.3, 8.9, 0),
-  ]);
-  const headGeo = new THREE.BoxGeometry(1.3, 0.16, 0.5).translate(-2.3, 8.78, 0);
+  const { poleGeo, headGeo, poleMat, headMat } = makeStreetlightParts();
   const poolGeo = new THREE.PlaneGeometry(7, 14).rotateX(-Math.PI / 2);
   const n = Math.ceil((VIEW_AHEAD + BEHIND) / LAMP_P) + 2;
-  const poles = new THREE.InstancedMesh(poleGeo, new THREE.MeshStandardMaterial({ color: 0x2a2a33, metalness: 0.7, roughness: 0.5 }), n * 2);
-  const heads = new THREE.InstancedMesh(headGeo, new THREE.MeshBasicMaterial({ color: hdr(0xffc890, 6) }), n * 2);
+  const poles = new THREE.InstancedMesh(poleGeo, poleMat, n * 2);
+  const heads = new THREE.InstancedMesh(headGeo, headMat, n * 2);
   const pools = new THREE.InstancedMesh(poolGeo, new THREE.MeshBasicMaterial({ map: glowTex, color: new THREE.Color(0xffa860).multiplyScalar(0.45), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false }), n * 2);
   const o = new THREE.Object3D(); let k = 0;
   for (let i = -1; i < n - 1; i++) for (const side of [-1, 1]) {
@@ -337,6 +274,7 @@ scene.add(lamps);
 // ---------------------------------------------------------------- city (buildings, billboards, gantries, overpasses, palms)
 const city = createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso: MAX_ANISO });
 const { buildings, cursor } = city;
+city.facadeMat.envMap = scene.environment; city.facadeMat.envMapIntensity = 0.35; // explicit envMap so the intensity applies
 
 // ---------------------------------------------------------------- traffic cars (models in cars.js)
 const streakMat = new THREE.MeshBasicMaterial({ map: streakTex, color: new THREE.Color(0.8, 0.05, 0.05), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
@@ -1105,5 +1043,5 @@ function step(realDt) {
   clock.getDelta();
   requestAnimationFrame(frame);
   window.__G = G; window.__player = player; window.__traffic = traffic;
-  window.__dbg = { traffic, buildings, coins, ramps, cursor, camera, input };
+  window.__dbg = { traffic, buildings, coins, ramps, cursor, camera, input, city };
 })();

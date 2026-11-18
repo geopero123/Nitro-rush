@@ -174,7 +174,7 @@ diffuseColor *= textureGrad(map, auv, gdx, gdy);`)
       .replace('#include <roughnessmap_fragment>', `
 float mk = textureGrad(roughnessMap, auv, gdx, gdy).g;
 float roughnessFactor = mix(0.07, 0.92, mk);`)
-      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(0.85, 0.04, mk);')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = mix(0.5, 0.04, mk);')
       .replace('#include <emissivemap_fragment>', `
 vec3 em = textureGrad(emissiveMap, auv, gdx, gdy).rgb;
 float h = cityHash(floor(vTile * 4.0) + vCell.xy * 37.0);
@@ -220,31 +220,38 @@ class GB {
 }
 const cellAttr = (i, kind = 0) => [(i % 4) * 0.25, 1 - (Math.floor(i / 4) + 1) * 0.25, kind];
 
-function buildingGeo(far) {
+/**
+ * Building geometry (local frame: footprint centred on origin, ground at y=0, x = depth axis, z = width axis).
+ * All four sides are textured, so it can be placed with any yaw. Use with getFacadeMaterial().
+ * opts: { w, h, dep, style (0-7), shop (0-2), setback (bool), crown (bool), far (bool: random big tower) }
+ * Missing values are randomised. geometry.userData = { w, h, dep, tw, td, h1 } (h = roof height, h1 = lower tier top).
+ */
+export function makeBuildingGeometry(opts = {}) {
+  const far = !!opts.far;
   const B = new GB();
-  const w = far ? rand(18, 34) : rand(12, 30), dep = far ? rand(18, 30) : rand(12, 22);
+  const w = opts.w ?? (far ? rand(18, 34) : rand(12, 30)), dep = opts.dep ?? (far ? rand(18, 30) : rand(12, 22));
   const tall = Math.random() < (far ? 0.7 : 0.28);
-  const h = tall ? rand(60, far ? 170 : 120) : rand(16, 55);
-  const style = irand(0, 7), uo = irand(0, 40), vo = irand(0, 40);
+  const h = opts.h ?? (tall ? rand(60, far ? 170 : 120) : rand(16, 55));
+  const style = opts.style ?? irand(0, 7), uo = irand(0, 40), vo = irand(0, 40);
   const G = 4.8;
   const roof = cellAttr(13), plain = cellAttr(8), mach = cellAttr(14);
   // ground floor shops
-  B.box(-dep / 2, dep / 2, 0, G, -w / 2, w / 2, cellAttr(irand(10, 12), 1), null, 12, G, irand(0, 9), 0);
+  B.box(-dep / 2, dep / 2, 0, G, -w / 2, w / 2, cellAttr(10 + (opts.shop ?? irand(0, 2)), 1), null, 12, G, irand(0, 9), 0);
   B.box(-dep / 2 - 0.25, dep / 2 + 0.25, G, G + 0.6, -w / 2 - 0.25, w / 2 + 0.25, plain, plain, 12, 14.4, 0, 0);
   // tower
-  let h1 = h, inset = 0.35;
-  const setback = h > 38 && Math.random() < 0.55;
+  let h1 = h; const inset = 0.35;
+  const setback = opts.setback ?? (h > 38 && Math.random() < 0.55);
   if (setback) h1 = h * rand(0.5, 0.75);
   B.box(-dep / 2 + inset, dep / 2 - inset, G + 0.6, h1, -w / 2 + inset, w / 2 - inset, cellAttr(style), roof, 12, 14.4, uo, vo, G + 0.6);
   let top = h1, tw = w - inset * 2, td = dep - inset * 2;
   if (setback) {
-    const si = rand(2, 4.5); tw -= si * 2; td -= si * 2;
+    const si = Math.min(rand(2, 4.5), tw / 4, td / 4); tw -= si * 2; td -= si * 2;
     const st2 = Math.random() < 0.6 ? style : irand(0, 7);
     B.box(-td / 2, td / 2, h1, h, -tw / 2, tw / 2, cellAttr(st2), roof, 12, 14.4, uo + 3, vo + 2, h1);
     top = h;
   }
   // parapet / crown
-  const crown = Math.random() < 0.3;
+  const crown = opts.crown ?? Math.random() < 0.3;
   B.box(-td / 2 - 0.2, td / 2 + 0.2, top, top + (crown ? 0.5 : 1.0), -tw / 2 - 0.2, tw / 2 + 0.2, crown ? cellAttr(15, 1) : plain, roof, 12, 14.4);
   if (crown) B.box(-td / 2 - 0.2, td / 2 + 0.2, top + 0.5, top + 1.3, -tw / 2 - 0.2, tw / 2 + 0.2, plain, roof, 12, 14.4);
   // rooftop machinery
@@ -257,6 +264,7 @@ function buildingGeo(far) {
   g.userData = { w, h: top, dep, tw, td, h1 };
   return g;
 }
+const buildingGeo = (far) => makeBuildingGeometry({ far });
 
 // ---------------------------------------------------------------- billboards (fictional brands)
 const ADS = [
@@ -343,25 +351,60 @@ function frondTex() {
 }
 
 // ---------------------------------------------------------------- the city
-export function createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso = 4 }) {
+// ================================================================ shared resources (lazy, created once)
+let RES = null;
+/** All shared materials/textures/geometries of the city kit. Call once a renderer exists (anisotropy is optional). */
+export function getCityResources(maxAniso = 4) {
+  if (RES) return RES;
   const atlas = buildAtlas();
   for (const t of [atlas.at, atlas.et]) t.anisotropy = maxAniso;
-  const facadeMat = makeFacadeMaterial(atlas);
+  const gSignMat = new THREE.MeshStandardMaterial({ map: gantrySignTex(), emissive: 0xffffff, roughness: 0.6 });
+  gSignMat.emissiveMap = gSignMat.map; gSignMat.emissiveIntensity = 0.55;
+  RES = {
+    atlas,
+    facadeMat: makeFacadeMaterial(atlas),
+    NEON_MATS: [0xff2e88, 0x22e6ff, 0x9a5cff, 0xffb040, 0x44ff99].map((c) => new THREE.MeshBasicMaterial({ color: hdr(c, 3) })),
+    SIGNS: ['HOTEL', 'BAR', 'CLUB', '24H', 'CAFE', 'TAXI', 'ARCADE', 'MOTEL', 'NOODLE', 'NEON', 'DINER', 'OPEN'].map((t) => {
+      const col = pick(['#ff2e88', '#22e6ff', '#ffb040', '#b27cff', '#5dff9a']);
+      return { text: t, len: t.length, mat: new THREE.MeshBasicMaterial({ map: signTex(t, col), color: new THREE.Color(2.2, 2.2, 2.2) }) };
+    }),
+    beaconMat: new THREE.MeshBasicMaterial({ color: hdr(0xff2233, 5) }),
+    neonGeo: new THREE.BoxGeometry(0.3, 1, 0.3).translate(0, 0.5, 0),
+    signGeo: new THREE.PlaneGeometry(1, 1),
+    beaconGeo: new THREE.SphereGeometry(0.4, 8, 6),
+    adMat: new THREE.MeshBasicMaterial({ map: buildAdAtlas(), color: new THREE.Color(1.25, 1.25, 1.25) }),
+    AD_GEOS: { wall: ADS.map((_, i) => billboardGeo(i, false)), roof: ADS.map((_, i) => billboardGeo(i, true)) },
+    steelMat: new THREE.MeshStandardMaterial({ color: 0x6a6e78, metalness: 0.8, roughness: 0.4 }),
+    gSignMat,
+    concMat: new THREE.MeshStandardMaterial({ map: concreteTex(), roughness: 0.9, metalness: 0.05 }),
+    stripMats: [0x22e6ff, 0xff2e88, 0xffb040].map((c) => new THREE.MeshBasicMaterial({ color: hdr(c, 3.5) })),
+    lampWhite: new THREE.MeshBasicMaterial({ color: hdr(0xfff0d0, 5) }),
+  };
+  return RES;
+}
+/** The single shared building material (atlas facades). Set .envMap = scene.environment for envMapIntensity to apply. */
+export const getFacadeMaterial = () => getCityResources().facadeMat;
+/** A building mesh (local frame as makeBuildingGeometry). Place with mesh.position / mesh.rotation.y. */
+export function makeBuilding(opts = {}) { return new THREE.Mesh(opts.geometry || makeBuildingGeometry(opts), getFacadeMaterial()); }
+/** Billboard mesh: plane faces +Z, bottom centre at origin (roof=true adds 4 m legs). ad = 0..14 or random. */
+export function makeBillboard(ad = irand(0, ADS.length - 1), roof = false) { const R = getCityResources(); return new THREE.Mesh(R.AD_GEOS[roof ? 'roof' : 'wall'][ad % ADS.length], R.adMat); }
+/** Vertical neon blade sign (faces +Z), centred on origin. */
+export function makeBladeSign(i = irand(0, 11)) {
+  const R = getCityResources(), sg = R.SIGNS[i % R.SIGNS.length], m = new THREE.Mesh(R.signGeo, sg.mat);
+  const sh = 0.75 * sg.len + 0.4; m.scale.set(1.25, sh * 1.25, 1); m.userData.height = sh * 1.25; return m;
+}
+/** Neon edge strip, grows up from origin. */
+export function makeNeonStrip(height = 20, colorIndex = irand(0, 4)) {
+  const R = getCityResources(), m = new THREE.Mesh(R.neonGeo, R.NEON_MATS[colorIndex % R.NEON_MATS.length]); m.scale.y = height; return m;
+}
+/** Blinking red aircraft beacon; call updateCityLights(t) each frame to blink all beacons. */
+export function makeBeacon() { const R = getCityResources(); return new THREE.Mesh(R.beaconGeo, R.beaconMat); }
+export function updateCityLights(t) { if (RES) RES.beaconMat.color.setHex(0xff2233).multiplyScalar(Math.sin(t * 3) > 0.6 ? 6 : 0.3); }
 
+export function createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso = 4 }) {
+  const { facadeMat, NEON_MATS, SIGNS, beaconMat, neonGeo, signGeo, beaconGeo, adMat, AD_GEOS, stripMats } = getCityResources(maxAniso);
   const NEAR_GEOS = Array.from({ length: 28 }, () => buildingGeo(false));
   const FAR_GEOS = Array.from({ length: 10 }, () => buildingGeo(true));
-
-  const NEON_MATS = [0xff2e88, 0x22e6ff, 0x9a5cff, 0xffb040, 0x44ff99].map((c) => new THREE.MeshBasicMaterial({ color: hdr(c, 4) }));
-  const SIGNS = ['HOTEL', 'BAR', 'CLUB', '24H', 'CAFE', 'TAXI', 'ARCADE', 'MOTEL', 'NOODLE', 'NEON', 'DINER', 'OPEN'].map((t) => {
-    const col = pick(['#ff2e88', '#22e6ff', '#ffb040', '#b27cff', '#5dff9a']);
-    return { len: t.length, mat: new THREE.MeshBasicMaterial({ map: signTex(t, col), color: new THREE.Color(2.2, 2.2, 2.2) }) };
-  });
-  const beaconMat = new THREE.MeshBasicMaterial({ color: hdr(0xff2233, 5) });
-  const neonGeo = new THREE.BoxGeometry(0.3, 1, 0.3).translate(0, 0.5, 0);
-  const signGeo = new THREE.PlaneGeometry(1, 1);
-  const beaconGeo = new THREE.SphereGeometry(0.4, 8, 6);
-  const adMat = new THREE.MeshBasicMaterial({ map: buildAdAtlas(), color: new THREE.Color(1.25, 1.25, 1.25) });
-  const AD_GEOS = { wall: ADS.map((_, i) => billboardGeo(i, false)), roof: ADS.map((_, i) => billboardGeo(i, true)) };
 
   const buildings = [];
   const cursor = { '-1': -BEHIND, '1': -BEHIND, '-2': -BEHIND, '2': -BEHIND };
@@ -420,66 +463,6 @@ export function createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso = 4 }) {
     buildings.push(b);
   }
 
-  // ------------------------------------------------ structures: sign gantries & overpasses
-  const steelMat = new THREE.MeshStandardMaterial({ color: 0x6a6e78, metalness: 0.8, roughness: 0.4 });
-  const gSignMat = new THREE.MeshStandardMaterial({ map: gantrySignTex(), emissive: 0xffffff, roughness: 0.6 });
-  gSignMat.emissiveMap = gSignMat.map; gSignMat.emissiveIntensity = 0.55;
-  const concTex = concreteTex();
-  const concMat = new THREE.MeshStandardMaterial({ map: concTex, roughness: 0.9, metalness: 0.05 });
-  const stripMats = [0x22e6ff, 0xff2e88, 0xffb040].map((c) => new THREE.MeshBasicMaterial({ color: hdr(c, 3.5) }));
-  const lampWhite = new THREE.MeshBasicMaterial({ color: hdr(0xfff0d0, 5) });
-
-  const box = (w, h, d, x, y, z) => new THREE.BoxGeometry(w, h, d).translate(x, y, z);
-  function merge(list) { // plain merge of non-indexed boxes
-    const geos = list.map((g) => g.index ? g.toNonIndexed() : g);
-    let n = 0; for (const g of geos) n += g.attributes.position.count;
-    const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2); let o = 0;
-    for (const g of geos) { pos.set(g.attributes.position.array, o * 3); nor.set(g.attributes.normal.array, o * 3); uv.set(g.attributes.uv.array, o * 2); o += g.attributes.position.count; }
-    const r = new THREE.BufferGeometry();
-    r.setAttribute('position', new THREE.BufferAttribute(pos, 3)); r.setAttribute('normal', new THREE.BufferAttribute(nor, 3)); r.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    r.computeBoundingSphere(); return r;
-  }
-  function worldUV(g, s = 0.12) { // box-project UVs in metres
-    const p = g.attributes.position, n = g.attributes.normal, uv = g.attributes.uv;
-    for (let i = 0; i < p.count; i++) {
-      const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i));
-      if (ax > 0.5) uv.setXY(i, p.getZ(i) * s, p.getY(i) * s); else if (ay > 0.5) uv.setXY(i, p.getX(i) * s, p.getZ(i) * s); else uv.setXY(i, p.getX(i) * s, p.getY(i) * s);
-    }
-    return g;
-  }
-
-  function makeGantry() {
-    const g = new THREE.Group();
-    const frame = merge([
-      box(0.45, 8.8, 0.45, -9.4, 4.4, 0), box(0.45, 8.8, 0.45, 9.4, 4.4, 0),
-      box(19.3, 0.35, 0.35, 0, 8.2, 0), box(19.3, 0.35, 0.35, 0, 7.0, 0),
-      ...Array.from({ length: 10 }, (_, k) => box(0.12, 1.3, 0.12, -8.6 + k * 1.9, 7.6, 0)),
-    ]);
-    g.add(new THREE.Mesh(frame, steelMat));
-    const n = irand(2, 3), xs = n === 2 ? [-3.6, 3.6] : [-5.6, 0, 5.6];
-    const panels = [], lights = [];
-    xs.forEach((x) => {
-      const i = irand(0, 3), p = new THREE.PlaneGeometry(4.6, 2.7).translate(x, 7.6, 0.25);
-      const uv = p.attributes.uv; for (let k = 0; k < uv.count; k++) uv.setX(k, (i + uv.getX(k)) / 4);
-      panels.push(p); lights.push(box(3.6, 0.08, 0.2, x, 6.18, 0.4));
-    });
-    g.add(new THREE.Mesh(merge(panels), gSignMat), new THREE.Mesh(merge(lights), lampWhite));
-    return g;
-  }
-  function makeOverpass() {
-    const g = new THREE.Group();
-    const deck = worldUV(merge([
-      box(150, 1.7, 11, 0, 8.35, 0), box(150, 1.1, 0.35, 0, 9.75, 5.3), box(150, 1.1, 0.35, 0, 9.75, -5.3),
-      ...[-10.6, 10.6, -32, 32, -55, 55].map((x) => box(1.6, 7.5, 2.4, x, 3.75, 0)),
-      ...[-10.6, 10.6, -32, 32, -55, 55].map((x) => box(2.4, 0.6, 9, x, 7.2, 0)),
-    ]));
-    g.add(new THREE.Mesh(deck, concMat));
-    const strip = new THREE.Mesh(box(150, 0.14, 0.14, 0, 7.55, 5.55), pick(stripMats));
-    const under = new THREE.Mesh(merge([-6, -2, 2, 6].map((x) => box(0.5, 0.06, 7, x, 7.48, 0))), lampWhite);
-    g.add(strip, under);
-    g.userData.strip = strip;
-    return g;
-  }
   const structures = [];
   for (let i = 0; i < 3; i++) { const m = makeGantry(); m.visible = false; scene.add(m); markReflective(m); structures.push({ g: m, type: 'gantry', active: false, D: 0 }); }
   for (let i = 0; i < 2; i++) { const m = makeOverpass(); m.visible = false; scene.add(m); markReflective(m); structures.push({ g: m, type: 'overpass', active: false, D: 0 }); }
@@ -489,36 +472,13 @@ export function createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso = 4 }) {
   const PALM_P = 36;
   const props = new THREE.Group(); scene.add(props);
   {
-    const trunkGeo = new THREE.CylinderGeometry(0.16, 0.3, 9, 7, 8, true).translate(0, 4.5, 0);
-    const tp = trunkGeo.attributes.position;
-    for (let i = 0; i < tp.count; i++) { const y = tp.getY(i); tp.setX(i, tp.getX(i) + 0.012 * y * y); }
-    trunkGeo.computeVertexNormals();
-    const ring = canvas(32, 128); ring[1].fillStyle = '#4a3a2a'; ring[1].fillRect(0, 0, 32, 128);
-    for (let y = 0; y < 128; y += 8) { ring[1].fillStyle = '#2a2018'; ring[1].fillRect(0, y, 32, 3); }
-    const rt = tex(ring[0]); rt.wrapS = rt.wrapT = THREE.RepeatWrapping; rt.repeat.set(1, 4);
-    const trunkMat = new THREE.MeshStandardMaterial({ map: rt, roughness: 0.9 });
-    // fronds: drooping strips
-    const fr = [];
-    for (let k = 0; k < 9; k++) {
-      const a = (k / 9) * Math.PI * 2 + rand(-0.2, 0.2), L = rand(3.6, 4.6), seg = 6;
-      const p = new THREE.PlaneGeometry(1.3, L, 1, seg).translate(0, L / 2, 0).rotateX(-Math.PI / 2);
-      const pp = p.attributes.position;
-      for (let i = 0; i < pp.count; i++) { const r = -pp.getZ(i); pp.setY(i, 0.45 * r - 0.16 * r * r); }
-      p.rotateY(-a).translate(0.012 * 81 + 0, 9, 0);
-      fr.push(p);
-    }
-    const frondGeo = mergeIndexed(fr); frondGeo.computeVertexNormals();
-    const frondMat = new THREE.MeshStandardMaterial({ map: frondTex(), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.8, color: 0x7a9a6a });
     const n = Math.ceil((VIEW_AHEAD + BEHIND) / PALM_P) + 2;
-    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, n * 2), fronds = new THREE.InstancedMesh(frondGeo, frondMat, n * 2);
-    const o = new THREE.Object3D(); let k = 0;
+    const o = new THREE.Object3D(), mats = [];
     for (let i = -1; i < n - 1; i++) for (const side of [-1, 1]) {
-      const z = -i * PALM_P + (side > 0 ? 9 : 27);
-      o.position.set(side * 12.6, 0.2, z); o.rotation.set(0, side > 0 ? Math.PI : 0, 0); o.scale.setScalar(rand(0.85, 1.15)); o.updateMatrix();
-      trunks.setMatrixAt(k, o.matrix); fronds.setMatrixAt(k, o.matrix); k++;
+      o.position.set(side * 12.6, 0.2, -i * PALM_P + (side > 0 ? 9 : 27)); o.rotation.set(0, side > 0 ? Math.PI : 0, 0); o.scale.setScalar(rand(0.85, 1.15)); o.updateMatrix();
+      mats.push(o.matrix.clone());
     }
-    for (const m of [trunks, fronds]) { m.count = k; m.frustumCulled = false; }
-    props.add(trunks, fronds);
+    props.add(makePalms(mats));
   }
 
   function update(distance, t) {
@@ -559,7 +519,152 @@ export function createCity(scene, { VIEW_AHEAD, BEHIND, maxAniso = 4 }) {
     for (const b of buildings) if (Math.abs(b.side) === 2) b.mesh.visible = hi;
   }
 
-  return { buildings, cursor, update, setQuality, facadeMat };
+  return { buildings, cursor, update, setQuality, facadeMat, structures };
+}
+
+// ================================================================ structures & props (world-placeable)
+
+const box = (w, h, d, x, y, z) => new THREE.BoxGeometry(w, h, d).translate(x, y, z);
+function merge(list) { // plain merge of non-indexed boxes
+  const geos = list.map((g) => g.index ? g.toNonIndexed() : g);
+  let n = 0; for (const g of geos) n += g.attributes.position.count;
+  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2); let o = 0;
+  for (const g of geos) { pos.set(g.attributes.position.array, o * 3); nor.set(g.attributes.normal.array, o * 3); uv.set(g.attributes.uv.array, o * 2); o += g.attributes.position.count; }
+  const r = new THREE.BufferGeometry();
+  r.setAttribute('position', new THREE.BufferAttribute(pos, 3)); r.setAttribute('normal', new THREE.BufferAttribute(nor, 3)); r.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  r.computeBoundingSphere(); return r;
+}
+function worldUV(g, s = 0.12) { // box-project UVs in metres
+  const p = g.attributes.position, n = g.attributes.normal, uv = g.attributes.uv;
+  for (let i = 0; i < p.count; i++) {
+    const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i));
+    if (ax > 0.5) uv.setXY(i, p.getZ(i) * s, p.getY(i) * s); else if (ay > 0.5) uv.setXY(i, p.getX(i) * s, p.getZ(i) * s); else uv.setXY(i, p.getX(i) * s, p.getY(i) * s);
+  }
+  return g;
+}
+
+/** Overhead sign gantry spanning a road of half-width ~9.4 m (posts at x=±halfSpan), faces +Z, ground at y=0. */
+export function makeGantry(halfSpan = 9.4) {
+  const { steelMat, gSignMat, lampWhite } = getCityResources();
+  const g = new THREE.Group();
+  const frame = merge([
+    box(0.45, 8.8, 0.45, -halfSpan, 4.4, 0), box(0.45, 8.8, 0.45, halfSpan, 4.4, 0),
+    box(halfSpan * 2 + 0.5, 0.35, 0.35, 0, 8.2, 0), box(halfSpan * 2 + 0.5, 0.35, 0.35, 0, 7.0, 0),
+    ...Array.from({ length: Math.round(halfSpan * 1.05) }, (_, k, a) => box(0.12, 1.3, 0.12, -halfSpan + 0.8 + k * ((halfSpan * 2 - 1.6) / (Math.round(halfSpan * 1.05) - 1)), 7.6, 0)),
+  ]);
+  g.add(new THREE.Mesh(frame, steelMat));
+  const n = irand(2, 3), xs = n === 2 ? [-3.6, 3.6] : [-5.6, 0, 5.6];
+  const panels = [], lights = [];
+  xs.forEach((x) => {
+    const i = irand(0, 3), p = new THREE.PlaneGeometry(4.6, 2.7).translate(x, 7.6, 0.25);
+    const uv = p.attributes.uv; for (let k = 0; k < uv.count; k++) uv.setX(k, (i + uv.getX(k)) / 4);
+    panels.push(p); lights.push(box(3.6, 0.08, 0.2, x, 6.18, 0.4));
+  });
+  g.add(new THREE.Mesh(merge(panels), gSignMat), new THREE.Mesh(merge(lights), lampWhite));
+  return g;
+}
+/** Concrete overpass crossing the road (deck along X, length = span, pillars at x=±10.6, ±32, ±55), ground y=0. */
+export function makeOverpass(span = 150) {
+  const { concMat, stripMats, lampWhite } = getCityResources();
+  const g = new THREE.Group();
+  const deck = worldUV(merge([
+    box(span, 1.7, 11, 0, 8.35, 0), box(span, 1.1, 0.35, 0, 9.75, 5.3), box(span, 1.1, 0.35, 0, 9.75, -5.3),
+    ...[-10.6, 10.6, -32, 32, -55, 55].filter((x) => Math.abs(x) < span / 2).map((x) => box(1.6, 7.5, 2.4, x, 3.75, 0)),
+    ...[-10.6, 10.6, -32, 32, -55, 55].filter((x) => Math.abs(x) < span / 2).map((x) => box(2.4, 0.6, 9, x, 7.2, 0)),
+  ]));
+  g.add(new THREE.Mesh(deck, concMat));
+  const strip = new THREE.Mesh(box(span, 0.14, 0.14, 0, 7.55, 5.55), pick(stripMats));
+  const under = new THREE.Mesh(merge([-6, -2, 2, 6].map((x) => box(0.5, 0.06, 7, x, 7.48, 0))), lampWhite);
+  g.add(strip, under);
+  g.userData.strip = strip;
+  return g;
+}
+
+/**
+ * Wet asphalt road material. Texture spans the full road width in U (u=0 left edge, u=1 right edge, ROAD_W metres)
+ * and one 12 m tile in V: for a ribbon road set uv = (across 0..1, distance / 12) and texture repeat (1,1);
+ * for a plane set map.repeat / roughnessMap.repeat to (1, length / 12). lanes = lane centre offsets in metres.
+ * Roughness map has puddles; patch with fx.createRoadReflection().patchRoad(mat) for planar wet reflections.
+ */
+export function makeRoadMaterial({ lanes = [-5.4, -1.8, 1.8, 5.4], roadHalf = 7.2, roadW = 17, maxAniso = 4 } = {}) {
+  const px = (m) => (m / roadW + 0.5) * 512;
+  const [c, g] = canvas(512, 512);
+  g.fillStyle = '#1a1920'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 14000; i++) { const v = (18 + Math.random() * 26) | 0; g.fillStyle = `rgb(${v},${v},${v + 5})`; g.fillRect(Math.random() * 512, Math.random() * 512, 1.6, 1.6); }
+  for (const lc of lanes) for (const o of [-0.85, 0.85]) { g.fillStyle = 'rgba(0,0,0,0.22)'; g.fillRect(px(lc + o) - 9, 0, 18, 512); }
+  g.fillStyle = '#0f0f14'; g.fillRect(0, 0, px(-roadHalf), 512); g.fillRect(px(roadHalf), 0, 512, 512);
+  g.fillStyle = '#efe6c8';
+  g.fillRect(px(-roadHalf) - 2, 0, 7, 512); g.fillRect(px(roadHalf) - 5, 0, 7, 512);
+  for (let i = 0; i < lanes.length - 1; i++) g.fillRect(px((lanes[i] + lanes[i + 1]) / 2) - 3, 0, 6, 512 * 0.36);
+  const map = tex(c, true, maxAniso); map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  const [cr, r] = canvas(256, 256);
+  r.fillStyle = 'rgb(150,150,150)'; r.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 26; i++) {
+    const x = Math.random() * 256, y = Math.random() * 256, rr = rand(10, 46);
+    const gr = r.createRadialGradient(x, y, 0, x, y, rr);
+    gr.addColorStop(0, 'rgba(20,20,20,0.95)'); gr.addColorStop(1, 'rgba(20,20,20,0)');
+    r.fillStyle = gr; r.beginPath(); r.ellipse(x, y, rr * 0.7, rr * 1.4, 0, 0, Math.PI * 2); r.fill();
+  }
+  const rough = tex(cr, false, maxAniso); rough.wrapS = rough.wrapT = THREE.RepeatWrapping;
+  return new THREE.MeshStandardMaterial({ map, roughnessMap: rough, roughness: 1, metalness: 0.05 });
+}
+/** Paved sidewalk material (one 6 m x 12 m tile per texture repeat). */
+export function makeSidewalkMaterial(maxAniso = 4) {
+  const [c, g] = canvas(128, 256);
+  g.fillStyle = '#26242c'; g.fillRect(0, 0, 128, 256);
+  g.strokeStyle = '#18171c'; g.lineWidth = 2;
+  for (let i = 0; i <= 8; i++) { g.beginPath(); g.moveTo(0, i * 32); g.lineTo(128, i * 32); g.stroke(); }
+  g.beginPath(); g.moveTo(64, 0); g.lineTo(64, 256); g.stroke();
+  g.fillStyle = '#3a3842'; g.fillRect(0, 0, 8, 256);
+  const t = tex(c, true, maxAniso); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return new THREE.MeshStandardMaterial({ map: t, roughness: 0.8 });
+}
+
+/** Palm tree parts for instancing: { trunkGeo, frondGeo, trunkMat, frondMat } (origin at trunk base, ~11 m tall). */
+let PALM = null;
+export function makePalmParts() {
+  if (PALM) return PALM;
+  const trunkGeo = new THREE.CylinderGeometry(0.16, 0.3, 9, 7, 8, true).translate(0, 4.5, 0);
+  const tp = trunkGeo.attributes.position;
+  for (let i = 0; i < tp.count; i++) { const y = tp.getY(i); tp.setX(i, tp.getX(i) + 0.012 * y * y); }
+  trunkGeo.computeVertexNormals();
+  const ring = canvas(32, 128); ring[1].fillStyle = '#4a3a2a'; ring[1].fillRect(0, 0, 32, 128);
+  for (let y = 0; y < 128; y += 8) { ring[1].fillStyle = '#2a2018'; ring[1].fillRect(0, y, 32, 3); }
+  const rt = tex(ring[0]); rt.wrapS = rt.wrapT = THREE.RepeatWrapping; rt.repeat.set(1, 4);
+  const trunkMat = new THREE.MeshStandardMaterial({ map: rt, roughness: 0.9 });
+  const fr = [];
+  for (let k = 0; k < 9; k++) {
+    const a = (k / 9) * Math.PI * 2 + rand(-0.2, 0.2), L = rand(3.6, 4.6), seg = 6;
+    const p = new THREE.PlaneGeometry(1.3, L, 1, seg).translate(0, L / 2, 0).rotateX(-Math.PI / 2);
+    const pp = p.attributes.position;
+    for (let i = 0; i < pp.count; i++) { const r = -pp.getZ(i); pp.setY(i, 0.45 * r - 0.16 * r * r); }
+    p.rotateY(-a).translate(0.012 * 81, 9, 0);
+    fr.push(p);
+  }
+  const frondGeo = mergeIndexed(fr); frondGeo.computeVertexNormals();
+  const frondMat = new THREE.MeshStandardMaterial({ map: frondTex(), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.8, color: 0x7a9a6a });
+  PALM = { trunkGeo, frondGeo, trunkMat, frondMat };
+  return PALM;
+}
+/** Instanced palms (2 draw calls) from an array of Matrix4 world transforms. */
+export function makePalms(matrices) {
+  const P = makePalmParts(), n = matrices.length;
+  const trunks = new THREE.InstancedMesh(P.trunkGeo, P.trunkMat, n), fronds = new THREE.InstancedMesh(P.frondGeo, P.frondMat, n);
+  matrices.forEach((m, i) => { trunks.setMatrixAt(i, m); fronds.setMatrixAt(i, m); });
+  for (const m of [trunks, fronds]) m.frustumCulled = false;
+  const g = new THREE.Group(); g.add(trunks, fronds); return g;
+}
+
+/** Streetlight parts for instancing: double-sided arm over the road towards -X. { poleGeo, headGeo, poleMat, headMat } */
+export function makeStreetlightParts() {
+  const pole = new THREE.CylinderGeometry(0.1, 0.16, 9, 8).translate(0, 4.5, 0).toNonIndexed();
+  const arm = new THREE.BoxGeometry(2.8, 0.14, 0.14).translate(-1.3, 8.9, 0).toNonIndexed();
+  return {
+    poleGeo: mergeGeos([pole, arm]),
+    headGeo: new THREE.BoxGeometry(1.3, 0.16, 0.5).translate(-2.3, 8.78, 0),
+    poleMat: new THREE.MeshStandardMaterial({ color: 0x2a2a33, metalness: 0.7, roughness: 0.5 }),
+    headMat: new THREE.MeshBasicMaterial({ color: hdr(0xffc890, 6) }),
+  };
 }
 
 function mergeIndexed(list) {
@@ -573,3 +678,5 @@ function mergeIndexed(list) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
   return g;
 }
+
+function mergeGeos(list) { return merge(list); }
