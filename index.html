@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0618" />
+<title>Nitro Rush</title>
+<link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+<div id="app">
+  <canvas id="c"></canvas>
+
+  <div id="loading" class="screen show">
+    <div class="logo">NITRO<span>RUSH</span></div>
+    <div class="bar"><i id="loadbar"></i></div>
+    <div class="sub" id="loadtext">Loading…</div>
+  </div>
+
+  <div id="menu" class="screen">
+    <div class="menu-left">
+      <div class="logo">NITRO<span>RUSH</span></div>
+      <div class="stats">
+        <div><small>BEST</small><b id="m-best">0</b></div>
+        <div><small>COINS</small><b><i class="coin"></i><span id="m-coins">0</span></b></div>
+      </div>
+      <button id="btn-play" class="btn big">RACE</button>
+      <div class="row">
+        <button id="btn-garage" class="btn">GARAGE</button>
+        <button id="btn-settings" class="btn">SETTINGS</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="garage" class="screen">
+    <div class="panel right">
+      <h2>GARAGE</h2>
+      <div id="paint-name">Rosso Corsa</div>
+      <div id="swatches"></div>
+      <div class="row"><button id="btn-buy" class="btn">SELECT</button></div>
+      <div class="garage-coins"><i class="coin"></i><span id="g-coins">0</span></div>
+      <button id="btn-garage-back" class="btn ghost">BACK</button>
+    </div>
+  </div>
+
+  <div id="settings" class="screen dim">
+    <div class="panel">
+      <h2>SETTINGS</h2>
+      <div class="opt"><span>Steering</span><button id="opt-controls" class="btn small">TOUCH</button></div>
+      <div class="opt"><span>Sound FX</span><button id="opt-sound" class="btn small">ON</button></div>
+      <div class="opt"><span>Music</span><button id="opt-music" class="btn small">ON</button></div>
+      <div class="opt"><span>Graphics</span><button id="opt-quality" class="btn small">HIGH</button></div>
+      <p class="credits">Ferrari 458 Italia 3D model by vicent091036 (Sketchfab, CC BY 4.0) via three.js examples. Game, city, music &amp; sound generated in code.</p>
+      <button id="btn-settings-back" class="btn ghost">BACK</button>
+    </div>
+  </div>
+
+  <div id="hud">
+    <div id="hud-top">
+      <button id="btn-pause" class="round">❚❚</button>
+      <div class="score"><b id="h-score">0</b><small id="h-mult"></small></div>
+      <div class="hud-coins"><i class="coin"></i><b id="h-coins">0</b><small id="h-dist">0.0 km</small></div>
+    </div>
+    <div id="popups"></div>
+    <div id="countdown"></div>
+    <div id="speedo">
+      <b id="h-speed">0</b><small>KM/H</small>
+      <div class="nbar"><i id="h-nitro"></i></div>
+    </div>
+    <button id="btn-nitro"><span>NITRO</span><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" class="track"/><circle cx="50" cy="50" r="44" class="fill" id="nitro-ring"/></svg></button>
+    <div id="hint">Hold <b>LEFT</b> / <b>RIGHT</b> side to steer · <b>Swipe up</b> or tap <b>NITRO</b> · Hit cars with nitro for <b>TAKEDOWNS</b></div>
+  </div>
+
+  <div id="pause" class="screen dim">
+    <div class="panel">
+      <h2>PAUSED</h2>
+      <button id="btn-resume" class="btn big">RESUME</button>
+      <button id="btn-quit" class="btn ghost">MAIN MENU</button>
+    </div>
+  </div>
+
+  <div id="over" class="screen dim">
+    <div class="panel wide">
+      <h2 class="wreck">WRECKED</h2>
+      <div class="big-score" id="o-score">0</div>
+      <div id="o-best" class="sub"></div>
+      <div class="grid">
+        <div><small>DISTANCE</small><b id="o-dist">0</b></div>
+        <div><small>TOP SPEED</small><b id="o-top">0</b></div>
+        <div><small>NEAR MISSES</small><b id="o-near">0</b></div>
+        <div><small>TAKEDOWNS</small><b id="o-take">0</b></div>
+        <div><small>COINS</small><b id="o-coins">0</b></div>
+      </div>
+      <div class="row">
+        <button id="btn-retry" class="btn big">RETRY</button>
+        <button id="btn-menu" class="btn ghost">MENU</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="flash"></div>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

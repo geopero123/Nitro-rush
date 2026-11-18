@@ -1,0 +1,6 @@
+{
+  "appId": "ge.giorgi.nitrorush",
+  "appName": "Nitro Rush",
+  "webDir": "dist",
+  "android": { "backgroundColor": "#0b0618" }
+}
