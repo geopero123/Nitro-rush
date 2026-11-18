@@ -8,6 +8,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Sound } from './audio.js';
+import { loadTraffic, poolModels, buildCar, repaint } from './cars.js';
 import { haptic, initNative, exitApp, isNative } from './native.js';
 
 // ---------------------------------------------------------------- helpers
@@ -394,65 +395,20 @@ function placeBuilding(b) {
   b.beacon.position.set(0, u.h + 0.4, 0);
 }
 
-// ---------------------------------------------------------------- traffic cars
-function extrudeProfile(points, width) {
-  const shape = new THREE.Shape(points.map(([x, y]) => new THREE.Vector2(x, y)));
-  const g = new THREE.ExtrudeGeometry(shape, { depth: width, bevelEnabled: true, bevelThickness: 0.06, bevelSize: 0.05, bevelSegments: 2, steps: 1 });
-  g.translate(0, 0, -width / 2);
-  g.rotateY(Math.PI / 2);
-  return g;
-}
-const ni = (g) => (g.index ? g.toNonIndexed() : g);
-function wheelsGeo(halfW, zs, r = 0.34) {
-  const out = [];
-  for (const z of zs) for (const s of [-1, 1]) out.push(ni(new THREE.CylinderGeometry(r, r, 0.26, 14).rotateZ(Math.PI / 2).translate(s * (halfW - 0.08), r, z)));
-  return out;
-}
-function makeCarType(kind) {
-  let body, dark, lights, halfW, halfL, height;
-  if (kind === 'sedan') {
-    halfW = 0.92; halfL = 2.3; height = 1.5;
-    body = extrudeProfile([[-2.25, 0.28], [-2.3, 0.78], [-2.0, 0.98], [-1.2, 1.02], [-0.7, 1.45], [0.5, 1.48], [1.15, 1.02], [2.15, 0.84], [2.28, 0.45], [2.1, 0.28]], halfW * 2 - 0.1);
-    dark = mergeGeometries([ni(extrudeProfile([[-1.24, 1.0], [-0.73, 1.49], [0.52, 1.52], [1.18, 1.0]], halfW * 2 - 0.04)), ...wheelsGeo(halfW, [-1.42, 1.38])]);
-    lights = mergeGeometries([-1, 1].map((s) => new THREE.BoxGeometry(0.5, 0.13, 0.06).translate(s * 0.58, 0.84, 2.33)));
-  } else if (kind === 'suv') {
-    halfW = 1.0; halfL = 2.45; height = 1.9;
-    body = extrudeProfile([[-2.4, 0.38], [-2.45, 1.05], [-2.3, 1.82], [0.7, 1.85], [1.35, 1.15], [2.35, 1.0], [2.45, 0.5], [2.25, 0.38]], halfW * 2 - 0.1);
-    dark = mergeGeometries([ni(extrudeProfile([[-2.32, 1.15], [-2.25, 1.88], [0.72, 1.9], [1.38, 1.15]], halfW * 2 - 0.04)), ...wheelsGeo(halfW, [-1.5, 1.5], 0.42)]);
-    lights = mergeGeometries([-1, 1].map((s) => new THREE.BoxGeometry(0.16, 0.5, 0.06).translate(s * 0.82, 1.2, 2.48)));
-  } else {
-    halfW = 1.25; halfL = 5.6; height = 3.7;
-    body = mergeGeometries([ni(new THREE.BoxGeometry(2.5, 2.9, 8.2).translate(0, 2.25, 1.3)), ni(extrudeProfile([[-1.1, 0.7], [-1.1, 2.9], [0.3, 2.9], [1.15, 1.9], [1.2, 0.7]], 2.4).translate(0, 0, -4.15))]);
-    dark = mergeGeometries([ni(new THREE.BoxGeometry(2.3, 0.6, 10.6).translate(0, 0.55, 0.2)), ...wheelsGeo(halfW, [-4.4, 2.6, 4.2], 0.52)]);
-    lights = mergeGeometries([
-      ...[-1, 1].map((s) => ni(new THREE.BoxGeometry(0.18, 0.4, 0.06).translate(s * 1.05, 1.0, 5.43))),
-      ...[-1, 1].map((s) => ni(new THREE.BoxGeometry(0.2, 0.08, 0.06).translate(s * 1.0, 3.62, 5.43))),
-    ]);
-  }
-  return { kind, body: ni(body), dark, lights, halfW, halfL, height };
-}
-const CAR_TYPES = { sedan: makeCarType('sedan'), suv: makeCarType('suv'), truck: makeCarType('truck') };
-const PAINT_MATS = [0x2b2d33, 0xb8bcc4, 0x0e1a44, 0xb4b4b8, 0x5a0d14, 0xe0a800, 0x103a2a, 0x0a0a0c].map((c) => new THREE.MeshStandardMaterial({ color: c, metalness: 0.65, roughness: 0.32, envMapIntensity: 1.4 }));
-const TRUCK_MATS = [0xa8a8ae, 0x2a4b8a, 0x8a1d1d, 0x333333].map((c) => new THREE.MeshStandardMaterial({ color: c, metalness: 0.3, roughness: 0.5 }));
-const darkMat = new THREE.MeshStandardMaterial({ color: 0x07070a, metalness: 0.6, roughness: 0.15, envMapIntensity: 1.5 });
-const tailMat = new THREE.MeshBasicMaterial({ color: hdr(0xff1a1a, 5) });
-const truckMarkerMat = new THREE.MeshBasicMaterial({ color: hdr(0xff2010, 5) });
+// ---------------------------------------------------------------- traffic cars (models in cars.js)
 const streakMat = new THREE.MeshBasicMaterial({ map: streakTex, color: new THREE.Color(0.8, 0.05, 0.05), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
 const streakGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(0, 0.03, 0.5);
 
 const traffic = [];
 function addTraffic(kind, n) {
-  const T = CAR_TYPES[kind];
-  for (let i = 0; i < n; i++) {
-    const g = new THREE.Group();
-    const body = new THREE.Mesh(T.body, kind === 'truck' ? TRUCK_MATS[0] : PAINT_MATS[0]);
-    g.add(body, new THREE.Mesh(T.dark, darkMat), new THREE.Mesh(T.lights, kind === 'truck' ? truckMarkerMat : tailMat));
+  for (const M of poolModels(kind, n)) {
+    const T = { kind, halfW: M.halfW, halfL: M.halfL, height: M.height };
+    const { g, body } = buildCar(M);
     const st = new THREE.Group(); for (const sx of [-1, 1]) { const m = new THREE.Mesh(streakGeo, streakMat); m.scale.set(0.5, 1, kind === 'truck' ? 4.5 : 3.5); m.position.x = sx * T.halfW * 0.65; st.add(m); } st.position.z = T.halfL; g.add(st);
     g.visible = false; scene.add(g);
-    traffic.push({ g, body, T, active: false, D: 0, x: 0, speed: 0, dead: false, passed: false, scraped: false, vy: 0, vx: 0, y: 0, av: new THREE.Vector3(), sway: Math.random() * 10 });
+    traffic.push({ g, body, T, model: M, active: false, D: 0, x: 0, speed: 0, dead: false, passed: false, scraped: false, vy: 0, vx: 0, y: 0, av: new THREE.Vector3(), sway: Math.random() * 10 });
   }
 }
-addTraffic('sedan', 16); addTraffic('suv', 10); addTraffic('truck', 6);
 
 // ---------------------------------------------------------------- coins / ramps / particles
 const coinGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.12, 22).rotateX(Math.PI / 2);
@@ -602,7 +558,7 @@ function resetWorld() {
 }
 
 // ---------------------------------------------------------------- spawning
-function freeCar(kind) { return traffic.find((t) => !t.active && t.T.kind === kind); }
+function freeCar(kind) { const f = traffic.filter((t) => !t.active && t.T.kind === kind); return f[Math.floor(Math.random() * f.length)]; }
 function spawnRow() {
   const d = difficulty();
   const maxCars = d < 0.15 ? 1 : d < 0.45 ? 2 : 3;
@@ -618,7 +574,7 @@ function spawnRow() {
     t.active = true; t.dead = false; t.passed = false; t.scraped = false;
     t.D = D + rand(-4, 4); t.x = LANES[li] + rand(-0.25, 0.25); t.speed = rowSpeed * rand(0.95, 1.05) * (kind === 'truck' ? 0.85 : 1);
     t.y = 0; t.vy = 0; t.vx = 0; t.g.rotation.set(0, 0, 0);
-    t.body.material = kind === 'truck' ? pick(TRUCK_MATS) : pick(PAINT_MATS);
+    repaint(t);
     t.g.children[3].visible = true;
     t.g.visible = true;
   }
@@ -1138,7 +1094,9 @@ function step(realDt) {
 (async function boot() {
   applyQuality();
   try {
-    await loadCar((p) => { $('loadbar').style.width = (p * 90).toFixed(0) + '%'; });
+    await loadCar((p) => { $('loadbar').style.width = (p * 80).toFixed(0) + '%'; });
+    await loadTraffic();
+    addTraffic('sedan', 18); addTraffic('suv', 10); addTraffic('truck', 6);
   } catch (e) {
     console.error(e); $('loadtext').textContent = 'Failed to load car: ' + e.message; return;
   }
@@ -1147,5 +1105,5 @@ function step(realDt) {
   goMenu();
   clock.getDelta();
   requestAnimationFrame(frame);
-  window.__G = G; window.__player = player;
+  window.__G = G; window.__player = player; window.__traffic = traffic;
 })();
