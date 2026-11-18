@@ -986,7 +986,7 @@ const SIM = Number(new URLSearchParams(location.search).get('sim') || 1);
 function frame() {
   const d0 = Math.min(clock.getDelta(), 0.05);
   for (let i = 0; i < SIM; i++) step(SIM > 1 ? 1 / 30 : d0);
-  refl.render(G.mode !== 'race');
+  refl.render(true);
   composer.render();
   requestAnimationFrame(frame);
 }
@@ -1152,7 +1152,7 @@ $('btn-r-menu').onclick = () => { if (G.state === 'results') { sound.click(); go
   $('loadbar').style.width = '100%';
   race = createRace({
     scene, camera, sky, player, sound, haptic, G, input, popup, emitSparks, readSteer, hdr,
-    slowmo, setEndlessVisible, setTheme, raceHud, onFinish: raceFinished, makeCivilian,
+    slowmo, setEndlessVisible, setTheme, raceHud, onFinish: raceFinished, makeCivilian, refl, markReflective,
     roadTex: KIT.roadMat.map, roadRough: KIT.roadMat.roughnessMap, walkTex: KIT.walkMat.map, glowTex, chevronTex, skylineTex,
     buildingGeo: (w, h, dep) => makeBuildingGeometry({ w, h, dep }), WIN_MATS: [city.facadeMat], NEON_MATS: KIT.res.NEON_MATS, SIGNS: KIT.res.SIGNS,
   });

@@ -153,6 +153,8 @@ export function createRace(ctx) {
   const walkTex = ctx.walkTex.clone(); walkTex.repeat.set(1, 1); walkTex.needsUpdate = true;
   const roadMat = new THREE.MeshStandardMaterial({ map: roadTex, roughnessMap: roadRough, roughness: 1, metalness: 0.05, envMapIntensity: 1.3 });
   const walkMat = new THREE.MeshStandardMaterial({ map: walkTex, roughness: 0.8 });
+  if (ctx.refl) ctx.refl.patchRoad(roadMat);
+  const mark = (o) => { if (ctx.markReflective) ctx.markReflective(o); return o; };
   const curbMat = new THREE.MeshStandardMaterial({ color: 0x3a3842, roughness: 0.7, side: THREE.DoubleSide });
   const railMat = new THREE.MeshStandardMaterial({ color: 0x8890a0, metalness: 0.9, roughness: 0.3, side: THREE.DoubleSide });
   const neonL = new THREE.MeshBasicMaterial({ color: ctx.hdr(0xff2e88, 3.5), side: THREE.DoubleSide });
@@ -209,7 +211,7 @@ export function createRace(ctx) {
     for (const r of RIVALS) {
       const { g, paint } = makeCarFromTemplate(tpl, r.color);
       const fl = new THREE.Mesh(fg, flameMat); fl.position.set(0, 0.42, player.halfL + 0.1); fl.visible = false; g.add(fl);
-      const body = new THREE.Group(); body.add(g);
+      const body = new THREE.Group(); body.add(g); mark(body);
       root.add(body);
       rivals.push({ ...r, obj: body, car: g, paint, flame: fl, isRival: true });
     }
@@ -222,7 +224,7 @@ export function createRace(ctx) {
     const kinds = ['sedan', 'sedan', 'sedan', 'suv', 'suv', 'sedan', 'suv', 'truck', 'sedan', 'suv', 'truck', 'sedan'];
     for (const kind of kinds) {
       const c = ctx.makeCivilian(kind);
-      c.g.visible = false; root.add(c.g);
+      c.g.visible = false; root.add(mark(c.g));
       civs.push({ ...c, active: false, s: 0, u: 0, speed: 0, dead: false, passed: false, scraped: false, y: 0, vy: 0, vu: 0, av: new THREE.Vector3() });
     }
   }
@@ -240,7 +242,7 @@ export function createRace(ctx) {
       add(new THREE.Mesh(ribbon(tr, Math.min(a, b), 0.2, Math.max(a, b), 0.2, 12), walkMat));
       add(new THREE.Mesh(ribbon(tr, side * 8.55, 0, side * 8.55, 0.2, 12), curbMat));
       add(new THREE.Mesh(ribbon(tr, side * WALL, 0.55, side * WALL, 0.95, 12), railMat));
-      add(new THREE.Mesh(ribbon(tr, side * (WALL - 0.07), 0.93, side * (WALL - 0.07), 1.0, 12), side < 0 ? neonL : neonR));
+      mark(add(new THREE.Mesh(ribbon(tr, side * (WALL - 0.07), 0.93, side * (WALL - 0.07), 1.0, 12), side < 0 ? neonL : neonR)));
     }
     // rail posts
     const nPosts = Math.floor(tr.L / 3) * 2;
@@ -265,7 +267,7 @@ export function createRace(ctx) {
       dummy.position.set(S.x + S.rx * side * 6.2, 0.03, S.z + S.rz * side * 6.2); dummy.rotation.set(0, S.yaw, 0); dummy.updateMatrix(); pools.setMatrixAt(k, dummy.matrix);
       k++;
     }
-    poles.count = heads.count = pools.count = k; add(poles); add(heads); add(pools);
+    poles.count = heads.count = pools.count = k; add(poles); mark(add(heads)); add(pools);
 
     // buildings: instanced per (geometry, material)
     const variants = [];
@@ -304,10 +306,10 @@ export function createRace(ctx) {
       for (let s = 0; s < tr.L;) s += tryPlace(s, side, 42, true) + rand(4, 16);
     }
     const unitGeo = new THREE.BoxGeometry(0.3, 1, 0.3).translate(0, 0.5, 0);
-    for (const b of buckets.values()) { const im = new THREE.InstancedMesh(b.geo, b.mat, b.ms.length); b.ms.forEach((m, i) => im.setMatrixAt(i, m)); im.computeBoundingSphere(); group.add(im); }
-    neonInst.forEach((ms, i) => { if (!ms.length) return; const im = new THREE.InstancedMesh(unitGeo, ctx.NEON_MATS[i], ms.length); ms.forEach((m, j) => im.setMatrixAt(j, m)); group.add(im); });
+    for (const b of buckets.values()) { const im = new THREE.InstancedMesh(b.geo, b.mat, b.ms.length); b.ms.forEach((m, i) => im.setMatrixAt(i, m)); im.computeBoundingSphere(); group.add(mark(im)); }
+    neonInst.forEach((ms, i) => { if (!ms.length) return; const im = new THREE.InstancedMesh(unitGeo, ctx.NEON_MATS[i], ms.length); ms.forEach((m, j) => im.setMatrixAt(j, m)); group.add(mark(im)); });
     const signGeo = new THREE.PlaneGeometry(1, 1).rotateY(-Math.PI / 2); // face the road (-x local)
-    signInst.forEach((ms, i) => { if (!ms.length) return; const im = new THREE.InstancedMesh(signGeo, ctx.SIGNS[i].mat, ms.length); ms.forEach((m, j) => im.setMatrixAt(j, m)); group.add(im); });
+    signInst.forEach((ms, i) => { if (!ms.length) return; const im = new THREE.InstancedMesh(signGeo, ctx.SIGNS[i].mat, ms.length); ms.forEach((m, j) => im.setMatrixAt(j, m)); group.add(mark(im)); });
     for (const v of variants) disposables.push(v);
 
     // start/finish gantry + sponsor arches
@@ -321,7 +323,7 @@ export function createRace(ctx) {
       const back = face.clone(); back.rotation.y = Math.PI; back.position.z = -0.31; g.add(back);
       const strip = new THREE.Mesh(new THREE.BoxGeometry(21.2, 0.12, 0.7), finish ? neonR : neonL); strip.position.y = 8.05; g.add(strip);
       if (finish) { const line = new THREE.Mesh(new THREE.PlaneGeometry(17, 1.4).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ map: checkerTex(), color: new THREE.Color(1.2, 1.2, 1.2) })); line.position.y = 0.03; g.add(line); }
-      group.add(g); return g;
+      group.add(mark(g)); return g;
     };
     arch(0, checkerTex(), true);
     ['NITRO RUSH', 'TURBO', 'MAX SPEED', 'NEON GP'].forEach((t, i) => arch(tr.L * (0.2 + i * 0.2) + 7, textTex(t, pick(['#ff2e88', '#22e6ff', '#ffb040'])), false));
