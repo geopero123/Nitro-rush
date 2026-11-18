@@ -564,12 +564,12 @@ async function loadCar(onProgress) {
   const shadow = new THREE.Mesh(new THREE.PlaneGeometry(0.655 * 4, 1.3 * 4), new THREE.MeshBasicMaterial({ map: ao, blending: THREE.MultiplyBlending, toneMapped: false, transparent: true, premultipliedAlpha: true }));
   shadow.rotation.x = -Math.PI / 2; shadow.renderOrder = 2; model.add(shadow);
   model.traverse((o) => { if (o.isMesh) o.frustumCulled = false; });
-  model.rotation.y = Math.PI;
+  // the glTF model already faces -Z (our forward direction)
   player.body.add(model);
   player.model = model;
   const box = new THREE.Box3().setFromObject(model), size = box.getSize(new THREE.Vector3());
   player.halfW = size.x / 2 * 0.92; player.halfL = size.z / 2 * 0.93;
-  const rear = box.max.z; // model rotated: rear is +z
+  const rear = box.max.z; // rear is +z
   for (const f of player.flames) f.position.z = rear - 0.05;
   player.tail.position.z = rear - 0.2;
   setPaint(save.paint);
@@ -890,7 +890,7 @@ function updatePlayerVisual(dt) {
     P.pitch = damp(P.pitch, targetPitch, 10, dt);
     P.body.rotation.set(P.pitch, 0, P.roll + P.vx * 0.006);
   }
-  for (const w of P.wheels) if (w) w.rotation.x += P.speed * dt / 0.34;
+  for (const w of P.wheels) if (w) w.rotation.x -= P.speed * dt / 0.34;
   for (const w of P.frontWheels) if (w) w.rotation.y = -input.steer * 0.35;
   P.tail.visible = P.speed > 8 && G.state !== 'crashing';
   const boost = P.boosting && G.state === 'playing';
